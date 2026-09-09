@@ -1,0 +1,17 @@
+{
+  "result": "passed",
+  "path": "HTTP UI proxy -> API -> SQLite -> FFmpeg -> FLV",
+  "states": [
+    "scheduled",
+    "starting",
+    "streaming",
+    "completed"
+  ],
+  "duration": 15.067,
+  "codecs": [
+    "h264",
+    "aac"
+  ],
+  "bytes": 11724326,
+  "job_id": "478ee6814ef04c128b2453e066227e6b"
+}

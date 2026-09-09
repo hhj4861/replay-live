@@ -1,0 +1,11 @@
+{
+  "result": "passed",
+  "transport": "RTMP loopback",
+  "duration": 15.067,
+  "bytes": 11721001,
+  "codecs": [
+    "h264",
+    "aac"
+  ],
+  "external_network": false
+}
