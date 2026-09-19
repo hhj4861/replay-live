@@ -1,0 +1,41 @@
+# Local, isolated live-stream verification. No host folders or SSH agent are shared.
+# Ubuntu's SHA256SUMS was checked on 2026-09-10.
+vmType: vz
+arch: aarch64
+cpus: 2
+memory: 3GiB
+disk: 12GiB
+images:
+  - location: https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-arm64.img
+    arch: aarch64
+    digest: sha256:afa139bac6f2629c1e1f2f8f34215f3a9ad9779801bcb945521ba1a45016743f
+mounts: []
+containerd:
+  system: false
+  user: false
+ssh:
+  loadDotSSHPubKeys: false
+  forwardAgent: false
+portForwards:
+  - guestIP: 127.0.0.1
+    guestPort: 18092
+    hostIP: 127.0.0.1
+    hostPort: 18092
+  - guestIP: 0.0.0.0
+    proto: any
+    ignore: true
+provision:
+  - mode: system
+    script: |
+      #!/bin/sh
+      set -eu
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -qq
+      apt-get install -y -qq --no-install-recommends python3-venv ffmpeg ca-certificates
+      python3 - <<'PY'
+      import os
+      from pathlib import Path
+      marker = Path('/etc/replay-platform-test-vm')
+      marker.write_text('replay-platform-live-test-v1\n')
+      os.chmod(marker, 0o644)
+      PY
