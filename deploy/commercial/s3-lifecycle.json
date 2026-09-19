@@ -1,0 +1,10 @@
+{
+  "Rules": [{
+    "ID": "replay-retired-object-versions",
+    "Status": "Enabled",
+    "Filter": { "Prefix": "replay/" },
+    "NoncurrentVersionExpiration": { "NoncurrentDays": 30 },
+    "Expiration": { "ExpiredObjectDeleteMarker": true },
+    "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 1 }
+  }]
+}

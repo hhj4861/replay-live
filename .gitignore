@@ -8,3 +8,14 @@ node_modules/
 web/dist/
 web/.wrangler/
 *.tsbuildinfo
+
+data-public/
+data-commercial/
+release-artifacts/
+.env.*
+!.env.example
+!.env.commercial.example
+!.env.google.example
+.vercel/
+client_secret_*.json
+*.pem

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "buildCommand": "REPLAY_COMMERCIAL=1 npm run build:vercel",
+  "outputDirectory": "dist-vercel",
+  "regions": ["iad1"],
+  "functions": {
+    "api/dispatch.ts": { "maxDuration": 300 },
+    "api/blob-control.ts": { "maxDuration": 120 },
+    "api/wake.ts": { "maxDuration": 30 },
+    "api/dispatch-queue.ts": {
+      "maxDuration": 300,
+      "experimentalTriggers": [{
+        "type": "queue/v2beta",
+        "topic": "replay-dispatch",
+        "maxConcurrency": 1,
+        "maxDeliveries": 5,
+        "retryAfterSeconds": 60
+      }]
+    },
+    "api/session.ts": { "maxDuration": 120 }
+  },
+  "crons": [{ "path": "/api/wake", "schedule": "0 0 * * *" }],
+  "headers": [{ "source": "/(.*)", "headers": [
+    { "key": "X-Content-Type-Options", "value": "nosniff" },
+    { "key": "Referrer-Policy", "value": "no-referrer" },
+    { "key": "X-Frame-Options", "value": "DENY" }
+  ] }]
+}

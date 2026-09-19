@@ -1,0 +1,16 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {
+      "Federated": "arn:aws:iam::123456789012:oidc-provider/oidc.vercel.com/TEAM"
+    },
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "oidc.vercel.com/TEAM:aud": "https://vercel.com/TEAM",
+        "oidc.vercel.com/TEAM:sub": "owner:TEAM:project:replay-api:environment:production"
+      }
+    }
+  }]
+}
