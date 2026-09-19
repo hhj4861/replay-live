@@ -1,0 +1,22 @@
+.local-import-connection { padding: 16px; border: 1px solid #d8e1e8; border-radius: 12px; background: #f7f9fb; margin-bottom: 20px; }
+.local-import-heading { display: flex; align-items: center; gap: 10px; color: #334155; }
+.local-import-heading > div { flex: 1; min-width: 0; }
+.local-import-heading strong { font-size: 14px; }
+.local-import-heading p, .local-import-connected p { margin: 3px 0 0; color: #64748b; font-size: 12px; line-height: 1.6; }
+.local-import-badge { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; white-space: nowrap; color: #64748b; }
+.local-import-connection.is-connected { border-color: #b9dacb; background: #f4faf7; }
+.is-connected .local-import-badge { color: #217551; }
+.local-import-pair { margin-top: 16px; }
+.local-import-pair label { display: block; font-size: 12px; margin-bottom: 6px; }
+.local-import-pair > div { display: flex; gap: 8px; }
+.local-import-pair input { flex: 1; min-width: 0; background: #fff; }
+.local-import-connected { display: flex; gap: 10px; justify-content: space-between; align-items: center; margin-top: 8px; }
+.local-import-connected button { flex-shrink: 0; font-size: 12px; text-decoration: underline; text-underline-offset: 3px; }
+.local-import-setup { margin-top: 12px; font-size: 12px; color: #526174; }
+.local-import-setup summary { display: flex; align-items: center; justify-content: space-between; cursor: pointer; }
+.local-import-setup ol { padding-left: 18px; margin: 12px 0; line-height: 1.7; }
+.local-import-setup li + li { margin-top: 6px; }
+.local-import-setup code { display: block; overflow-wrap: anywhere; margin: 6px 0; padding: 8px; border-radius: 6px; background: #e9eef3; font-size: 11px; }
+.local-import-progress { margin-top: 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; color: #475569; }
+.local-import-progress button { text-decoration: underline; text-underline-offset: 3px; }
+@media (max-width: 560px) { .local-import-pair > div { flex-direction: column; } .local-import-heading { flex-wrap: wrap; } }
