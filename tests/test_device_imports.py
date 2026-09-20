@@ -246,6 +246,11 @@ def test_daemon_fixed_cloud_origin_rejects_unsafe_configuration(url):
     ('revoked', 'DEVICE_IMPORT_REVOKED'),
     ('bad-destination', 'DEVICE_IMPORT_INVALID'),
     ('vercel-lookalike', 'DEVICE_IMPORT_INVALID'),
+    ('r2-lookalike', 'DEVICE_IMPORT_INVALID'),
+    ('r2-other-worker', 'DEVICE_IMPORT_INVALID'),
+    ('r2-wrong-path', 'DEVICE_IMPORT_INVALID'),
+    ('r2-wrong-port', 'DEVICE_IMPORT_INVALID'),
+    ('r2-storage', None),
     (None, None),
 ])
 def test_device_worker_preserves_stage_errors_and_accepts_official_blob_put(tmp_path, failure, code):
@@ -273,9 +278,15 @@ def test_device_worker_preserves_stage_errors_and_accepts_official_blob_put(tmp_
             url = 'https://vercel.com/api/blob/?pathname=one-file&vercel-blob-signature=synthetic'
             if failure == 'bad-destination': url = 'https://vercel.com/unrelated-endpoint'
             if failure == 'vercel-lookalike': url = 'https://vercel.com.evil.example/api/blob/'
+            if failure and failure.startswith('r2-'):
+                url = 'https://replay-live-storage.guswhd1085.workers.dev/objects/replay/' + 'b' * 64 + '/media/' + task_id + '.mp4?grant=synthetic'
+                if failure == 'r2-lookalike': url = url.replace('.workers.dev/', '.workers.dev.evil.example/')
+                if failure == 'r2-other-worker': url = url.replace('replay-live-storage.', 'unrelated-storage.')
+                if failure == 'r2-wrong-path': url = url.replace('/objects/replay/', '/other/')
+                if failure == 'r2-wrong-port': url = url.replace('.workers.dev/', '.workers.dev:8443/')
             return httpx.Response(200, json={'url': url, 'method': 'PUT',
                 'headers': {'Content-Type': 'video/mp4', 'Content-Length': str(len(data))}})
-        if request.url.host == 'vercel.com':
+        if request.url.host in {'vercel.com', 'replay-live-storage.guswhd1085.workers.dev'}:
             assert request.method == 'PUT' and request.content == data
             assert 'authorization' not in request.headers
             return httpx.Response(503 if failure == 'storage' else 200)
