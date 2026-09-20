@@ -12,11 +12,11 @@ const bytes = Buffer.from('test video content');
 const sha256 = createHash('sha256').update(bytes).digest('hex');
 let runtime: Miniflare;
 before(async () => {
-  const bundled = await build({ entryPoints: ['tests/storage-worker.ts'], bundle: true, write: false, format: 'esm', target: 'es2022' });
+  const bundled = await build({ entryPoints: ['storage-worker.ts'], bundle: true, write: false, format: 'esm', target: 'es2022' });
   runtime = new Miniflare(convertV4MiniflareOptions({ name: 'storage', modules: true, script: bundled.outputFiles[0].text,
     compatibilityDate: '2026-08-18', r2Buckets: ['MEDIA'], bindings: {
       REPLAY_CONTROL_TOKEN: token, REPLAY_OBJECT_KEY: signing, REPLAY_PUBLIC_URL: base,
-      REPLAY_ORIGINS: 'https://replay-live.pages.dev',
+      REPLAY_ORIGINS: 'https://replay-live-poc.vercel.app,https://replay-live.pages.dev',
     } }));
 });
 after(async () => { await runtime?.dispose(); });
@@ -31,6 +31,7 @@ async function uploadGrant(extra: Record<string, unknown> = {}) {
   return await result.json() as { url: string; headers: Record<string, string> };
 }
 test('auth and tenant checks precede storage; bounded grants carry no control secret', async () => {
+  assert.equal((await runtime.dispatchFetch(base + '/api/wake')).status, 404);
   assert.equal((await control('health', {}, 'invalid')).status, 401);
   assert.equal((await control('upload', { tenant_id: 'another', size: bytes.length, sha256 })).status, 400);
   assert.equal((await control('upload', { size: 50 * 1024 ** 2 + 1, sha256 })).status, 400);
@@ -58,6 +59,12 @@ test('real R2 binding validates upload checksum, refuses overwrite, and serves r
   assert.equal(ranged.status, 206);
   assert.equal(ranged.headers.get('content-range'), `bytes 2-5/${bytes.length}`);
   assert.equal(await ranged.text(), bytes.subarray(2, 6).toString());
+  const currentWeb = await runtime.dispatchFetch(download.url, { headers: {
+    Range: 'bytes=0-3', Origin: 'https://replay-live-poc.vercel.app',
+  } });
+  assert.equal(currentWeb.status, 206);
+  assert.equal(currentWeb.headers.get('access-control-allow-origin'), 'https://replay-live-poc.vercel.app');
+  await currentWeb.arrayBuffer();
   assert.equal((await runtime.dispatchFetch(download.url, { headers: { 'If-Match': '"wrong"' } })).status, 412);
 });
 test('tampered, expired, other-path, wrong-method and cross-origin capabilities fail closed', async () => {

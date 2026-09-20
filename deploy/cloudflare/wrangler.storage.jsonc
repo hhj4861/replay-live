@@ -1,0 +1,12 @@
+{
+  "name": "replay-live-storage",
+  "main": "storage-worker.ts",
+  "compatibility_date": "2026-08-18",
+  "workers_dev": true,
+  "observability": { "enabled": false },
+  "vars": {
+    "REPLAY_PUBLIC_URL": "https://replay-live-storage.guswhd1085.workers.dev",
+    "REPLAY_ORIGINS": "https://replay-live-poc.vercel.app,https://replay-live.pages.dev"
+  },
+  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "replay-live-media" }]
+}
