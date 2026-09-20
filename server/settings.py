@@ -66,11 +66,11 @@ class Settings:
             raise ValueError('REPLAY_MODE must be production or development')
         if self.aws_auth_mode not in ('standard', 'vercel_oidc'):
             raise ValueError('REPLAY_AWS_AUTH_MODE must be standard or vercel_oidc')
-        if self.storage_provider not in ('s3', 'vercel-blob') or self.secret_provider not in ('aws-kms', 'env-aesgcm'):
+        if self.storage_provider not in ('s3', 'vercel-blob', 'cloudflare-r2') or self.secret_provider not in ('aws-kms', 'env-aesgcm'):
             raise ValueError('Unsupported storage or secret provider')
-        if self.dispatch_mode not in ('cron', 'queue'):
+        if self.dispatch_mode not in ('cron', 'queue', 'cloudflare'):
             raise ValueError('Unsupported dispatcher mode')
-        if self.dispatch_mode == 'queue':
+        if self.dispatch_mode in ('queue', 'cloudflare'):
             wake = urlsplit(self.dispatch_wakeup_url)
             if (wake.scheme != 'https' or not wake.hostname or wake.username or wake.password
                     or wake.port not in (None, 443) or wake.query or wake.fragment or wake.path != '/api/wake'):
@@ -89,14 +89,15 @@ class Settings:
                 raise ValueError('S3 production storage requires a private bucket and external KMS')
             if self.secret_provider == 'aws-kms' and not self.kms_key_id:
                 raise ValueError('AWS secret encryption requires external KMS')
-            if self.storage_provider == 'vercel-blob':
+            if self.storage_provider in ('vercel-blob', 'cloudflare-r2'):
                 bridge = urlsplit(self.blob_control_url)
                 if (bridge.scheme != 'https' or not bridge.hostname or bridge.username or bridge.password
                         or bridge.port not in (None, 443) or bridge.query or bridge.fragment
                         or bridge.path != '/api/blob-control'):
-                    raise ValueError('Vercel Blob requires an HTTPS control endpoint')
-                if self.max_upload_bytes > 50 * 1024**2 or self.max_output_bytes > 128 * 1024**2:
-                    raise ValueError('Vercel Blob upload/output limits exceed the supported adapter limits')
+                    raise ValueError('Object storage requires an HTTPS control endpoint')
+                limit = 64 if self.storage_provider == 'cloudflare-r2' else 128
+                if self.max_upload_bytes > 50 * 1024**2 or self.max_output_bytes > limit * 1024**2:
+                    raise ValueError('Object upload/output limits exceed the supported adapter limits')
             if parsed.scheme != 'https' or any(urlsplit(o).scheme != 'https' for o in self.origins):
                 raise ValueError('Production requires HTTPS')
             if self.version == 'development':

@@ -1,0 +1,20 @@
+{
+  "REPLAY_DATABASE_URL": "postgresql+psycopg://replace-user:replace-password@replace-neon-host/replay?sslmode=require",
+  "REPLAY_CALLBACK_KEY": "replace-with-existing-callback-key",
+  "REPLAY_SECRET_KEY_IDS": "v1",
+  "REPLAY_SECRET_ACTIVE_KEY": "v1",
+  "REPLAY_SECRET_KEY_V1": "replace-with-existing-base64-key",
+  "REPLAY_LOGIN_PROVIDER": "google",
+  "REPLAY_GOOGLE_CLIENT_ID": "replace-client.apps.googleusercontent.com",
+  "REPLAY_GOOGLE_ALLOWED_EMAILS": "replace-approved-email",
+  "REPLAY_GOOGLE_ALLOW_SIGNUPS": "0",
+  "REPLAY_MAX_STORAGE_BYTES": "268435456",
+  "REPLAY_MAX_DURATION": "120",
+  "REPLAY_WORKER_MAX_SECONDS": "1200",
+  "REPLAY_VALIDATION_TIMEOUT": "180",
+  "REPLAY_LEASE_SECONDS": "180",
+  "REPLAY_RESERVATION_GRACE": "120",
+  "REPLAY_TENANT_CONCURRENCY": "4",
+  "REPLAY_GLOBAL_CONCURRENCY": "4",
+  "REPLAY_RETENTION_DAYS": "7"
+}

@@ -1,0 +1,26 @@
+{
+  "name": "replay-live-api",
+  "main": "index.ts",
+  "compatibility_date": "2026-08-18",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": { "enabled": false },
+  "limits": { "cpu_ms": 10000 },
+  "vars": {
+    "REPLAY_PUBLIC_URL": "https://replay-live-api.guswhd1085.workers.dev",
+    "REPLAY_ORIGINS": "https://replay-live.pages.dev",
+    "REPLAY_VERSION": "replace-with-release-commit"
+  },
+  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "replay-live-media" }],
+  "durable_objects": { "bindings": [
+    { "name": "API", "class_name": "ApiContainer" },
+    { "name": "MEDIA_JOBS", "class_name": "MediaContainer" },
+    { "name": "DISPATCH", "class_name": "Dispatcher" }
+  ] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ApiContainer", "MediaContainer", "Dispatcher"] }],
+  "containers": [
+    { "class_name": "ApiContainer", "image": "./api.Dockerfile", "image_build_context": "../..", "max_instances": 1, "instance_type": "basic" },
+    { "class_name": "MediaContainer", "image": "./media.Dockerfile", "image_build_context": "../..", "max_instances": 4, "instance_type": "standard-2" }
+  ],
+  "triggers": { "crons": ["0 0 * * *"] }
+}

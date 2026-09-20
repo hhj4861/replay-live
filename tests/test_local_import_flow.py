@@ -25,7 +25,7 @@ def test_daemon_result_uses_existing_tenant_upload_and_validation(commercial, cl
 
     manager = LocalImports(root=tmp_path, downloader=source_download, pairing_code='TEST-CODE')
     with TestClient(create_local_import_app(manager=manager), base_url='http://127.0.0.1:17833',
-                    headers={'Origin': 'https://replay-live-poc.vercel.app', 'X-Replay-Local': '1'}) as local:
+                    headers={'Origin': 'https://replay-live.pages.dev', 'X-Replay-Local': '1'}) as local:
         pairing = local.post('/pair', json={'code': 'TEST-CODE'}).json()
         capability = {'Authorization': 'Bearer ' + pairing['token']}
         created = local.post('/imports', headers=capability, json={'request_id': str(uuid.uuid4()),
