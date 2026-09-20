@@ -47,7 +47,7 @@ def test_pc_gets_cloud_task_and_uploads_directly_then_real_validation(commercial
     manager = LocalImports(root=tmp_path, pairing_code='PC-A', downloader=downloaded,
         cloud_url='http://testserver', cloud_client=TestClient(cloud.app), development=True)
     with TestClient(create_local_import_app(manager=manager), base_url='http://127.0.0.1:17833',
-            headers={'Origin': 'https://replay-live-poc.vercel.app', 'X-Replay-Local': '1'}) as local:
+            headers={'Origin': 'https://replay-live.pages.dev', 'X-Replay-Local': '1'}) as local:
         pair = local.post('/pair', json={'code': 'PC-A'}).json()
         assert 'cloud-direct-upload' in pair['features']
         local_headers = {'Authorization': 'Bearer ' + pair['token']}

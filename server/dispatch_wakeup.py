@@ -1,4 +1,4 @@
-"""Notify a durable Vercel queue without exposing job data or credentials."""
+"""Notify a durable dispatcher without exposing job data or tenant credentials."""
 import threading
 import time
 
@@ -7,7 +7,7 @@ import httpx
 
 class DispatchWakeup:
     def __init__(self, settings, *, client=None, clock=time.monotonic):
-        self.enabled = settings.dispatch_mode == 'queue'
+        self.enabled = settings.dispatch_mode in ('queue', 'cloudflare')
         self.url = settings.dispatch_wakeup_url
         self._token = settings.control_token
         self._clock = clock

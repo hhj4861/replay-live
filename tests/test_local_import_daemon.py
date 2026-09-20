@@ -8,7 +8,7 @@ import pytest
 
 from server.local_import_daemon import LocalImports, MAX_BYTES, create_local_import_app
 
-ORIGIN = 'https://replay-live-poc.vercel.app'
+ORIGIN = 'https://replay-live.pages.dev'
 SECOND_ORIGIN = 'http://127.0.0.1:13101'
 CODE = 'SYNTHETIC-CODE'
 VIDEO = b'\x00\x00\x00\x18ftypisom' + b'fixture' * 32

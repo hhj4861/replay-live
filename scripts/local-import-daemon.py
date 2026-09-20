@@ -17,7 +17,7 @@ from server.local_import_daemon import DEFAULT_ORIGINS, PORT, LocalImports, crea
 def main():
     parser = argparse.ArgumentParser(description='Replay Live 영상 가져오기 도우미')
     parser.add_argument('--origin', action='append', default=[], help='추가로 허용할 정확한 웹 출처')
-    parser.add_argument('--cloud-url', default='https://replay-live-api.vercel.app', help='신뢰하는 클라우드 API의 고정 HTTPS 출처')
+    parser.add_argument('--cloud-url', default='https://replay-live-api.guswhd1085.workers.dev', help='신뢰하는 클라우드 API의 고정 HTTPS 출처')
     args = parser.parse_args()
     log = logging.getLogger('replay.local_import')
     log.setLevel(logging.INFO)

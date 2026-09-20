@@ -1,0 +1,4 @@
+**
+!requirements.lock
+!server
+!server/*.py

@@ -1,0 +1,22 @@
+{
+  "name": "replay-live-cloudflare",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --experimental-transform-types --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "0.3.7"
+  },
+  "overrides": { "sharp": "0.35.4" },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260920.1",
+    "@types/node": "22.19.19",
+    "esbuild": "0.28.1",
+    "miniflare": "5.20260811.1-alpha",
+    "typescript": "5.9.3",
+    "wrangler": "4.123.0"
+  }
+}
