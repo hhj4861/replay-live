@@ -20,3 +20,8 @@
 .local-import-progress { margin-top: 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; color: #475569; }
 .local-import-progress button { text-decoration: underline; text-underline-offset: 3px; }
 @media (max-width: 560px) { .local-import-pair > div { flex-direction: column; } .local-import-heading { flex-wrap: wrap; } }
+
+.local-import-failure { margin-top: 14px; scroll-margin: 24px; }
+.local-import-failure:focus-visible { outline: 2px solid #b42318; outline-offset: 3px; }
+.local-import-failure button { border: 1px solid currentColor; border-radius: 6px; padding: 7px 10px; font-size: 12px; }
+.local-import-failure button:disabled { opacity: .5; }

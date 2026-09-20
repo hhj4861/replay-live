@@ -236,3 +236,68 @@ def test_expiry_cleans_abandoned_tasks_but_preserves_admitted_video(commercial, 
 def test_daemon_fixed_cloud_origin_rejects_unsafe_configuration(url):
     with pytest.raises(ValueError):
         cloud_origin(url)
+
+
+@pytest.mark.parametrize(('failure', 'code'), [
+    ('/task', 'DEVICE_IMPORT_TASK_FAILED'),
+    ('/upload', 'DEVICE_IMPORT_UPLOAD_FAILED'),
+    ('storage', 'DEVICE_IMPORT_UPLOAD_FAILED'),
+    ('/complete', 'DEVICE_IMPORT_COMPLETE_FAILED'),
+    ('revoked', 'DEVICE_IMPORT_REVOKED'),
+    ('bad-destination', 'DEVICE_IMPORT_INVALID'),
+    ('vercel-lookalike', 'DEVICE_IMPORT_INVALID'),
+    (None, None),
+])
+def test_device_worker_preserves_stage_errors_and_accepts_official_blob_put(tmp_path, failure, code):
+    import httpx
+    data = b'bounded synthetic recording'
+    digest = hashlib.sha256(data).hexdigest()
+    task_id = 'a' * 32
+    calls, reported = [], []
+    def transport(request):
+        calls.append(request)
+        path = request.url.path
+        if path.endswith('/failure'):
+            import json
+            reported.append(json.loads(request.content)['code'])
+            return httpx.Response(200, json={})
+        if failure == 'revoked' and path.endswith('/task'):
+            return httpx.Response(401, json={'detail': 'secret must not escape'})
+        if failure in ('/task', '/upload', '/complete') and path.endswith(failure):
+            return httpx.Response(400 if failure == '/upload' else 502, json={'detail': 'secret must not escape'})
+        if path.endswith('/task'):
+            return httpx.Response(200, json={'id': task_id, 'state': 'queued',
+                'source': {'provider': 'direct', 'url': 'https://media.example/recording.mp4'},
+                'max_bytes': 1024, 'max_duration': 120, 'expires_at': time.time() + 300})
+        if path.endswith('/upload'):
+            url = 'https://vercel.com/api/blob/?pathname=one-file&vercel-blob-signature=synthetic'
+            if failure == 'bad-destination': url = 'https://vercel.com/unrelated-endpoint'
+            if failure == 'vercel-lookalike': url = 'https://vercel.com.evil.example/api/blob/'
+            return httpx.Response(200, json={'url': url, 'method': 'PUT',
+                'headers': {'Content-Type': 'video/mp4', 'Content-Length': str(len(data))}})
+        if request.url.host == 'vercel.com':
+            assert request.method == 'PUT' and request.content == data
+            assert 'authorization' not in request.headers
+            return httpx.Response(503 if failure == 'storage' else 200)
+        if path.endswith('/complete'):
+            return httpx.Response(200, json={'media': {'id': task_id}})
+        raise AssertionError('Unexpected destination')
+    def download(source, output, **kwargs):
+        output.write_bytes(data)
+        return {'bytes': len(data), 'sha256': digest}
+    phases = []
+    output = tmp_path / 'recording.mp4'
+    with httpx.Client(transport=httpx.MockTransport(transport)) as client:
+        args = dict(api='https://api.example', output=output, downloader=download,
+                    check_active=lambda: None, on_phase=phases.append, client=client)
+        if code:
+            with pytest.raises(SourceImportError) as error:
+                run_device_import(task_id, 'single-task-capability', **args)
+            assert error.value.code == code and str(error.value) == code
+            assert reported == [code]
+        else:
+            assert run_device_import(task_id, 'single-task-capability', **args) == {'media_id': task_id}
+            assert phases == ['requesting', 'downloading', 'uploading', 'validating'] and not reported
+    assert not output.exists()
+    if failure == '/complete':
+        assert sum(r.url.path.endswith('/complete') for r in calls) == 3

@@ -14,8 +14,9 @@ import BroadcastWatchLinks, { type BroadcastLinks } from './broadcast-watch-link
 import MemberManagement from './member-management';
 import { canManageMembers, type Account } from '@/lib/member-management';
 import { createMediaSelection } from './media-selection';
-import { createLocalImporter, type LocalImportPhase } from '@/lib/local-import';
+import { createLocalImporter, LocalImportError, type LocalImportPhase } from '@/lib/local-import';
 import LocalImportConnection from './local-import-connection';
+import LocalImportFailure, { type ImportFailure } from './local-import-failure';
 import './commercial-studio.css';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -37,6 +38,8 @@ const terminal = new Set(['completed', 'failed', 'stopped']);
 const size = (bytes: number) => bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GiB` : `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
 const clock = (seconds: number) => `${Math.floor(seconds / 60)}분 ${Math.floor(seconds % 60)}초`;
 const failures: Record<string, string> = {
+  DEVICE_IMPORT_TASK_FAILED: '서버에서 가져오기 작업을 받지 못했습니다. 인터넷 연결을 확인하고 다시 시도하세요.',
+  DEVICE_IMPORT_COMPLETE_FAILED: '업로드 완료를 서버에서 확인하지 못했습니다. 보관함 상태를 확인한 뒤 다시 시도하세요.',
   DEVICE_IMPORT_REVOKED: '가져오기 권한이 만료되었거나 취소됐습니다. 로그인과 내 컴퓨터 연결을 확인하고 다시 시도하세요.',
   DEVICE_IMPORT_UPLOAD_FAILED: '내 컴퓨터에서 보관함으로 업로드하지 못했습니다. 네트워크 연결을 확인하고 다시 시도하세요.',
   DEVICE_IMPORT_INVALID: '도우미와 서버의 작업 정보가 일치하지 않습니다. 도우미를 업데이트하고 다시 연결하세요.',
@@ -103,6 +106,7 @@ export default function CommercialHome() {
   const [historyFilter, setHistoryFilter] = useState<'all' | 'active' | 'finished'>('all');
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
+  const [importFailure, setImportFailure] = useState<ImportFailure | null>(null);
   const [notice, setNotice] = useState('');
   const [uploadProgress, setUploadProgress] = useState(0);
   const [events, setEvents] = useState<{ at: number; code?: string; message?: string }[]>([]);
@@ -146,7 +150,7 @@ export default function CommercialHome() {
     actionVersion.current += 1; uploading.current?.abort(); uploading.current = null; pendingUpload.current = null;
     setAuthenticated(false); setConnected(false); setMedia([]); setJobs([]); setDestinations({}); setPreview(null); setRoles([]);
     setMediaId(''); setUsage(undefined); setHealth(undefined); setCatalog(undefined); setOutputEstimate(undefined);
-    setEvents([]); setConfirmed(false); setBusy(''); setError(''); setNotice(''); setUploadProgress(0);
+    setEvents([]); setConfirmed(false); setBusy(''); setError(''); setImportFailure(null); setNotice(''); setUploadProgress(0);
     setTitle(''); setTargets([]); setSchedule(''); setStartMode('now'); setHistoryFilter('all');
     localImportAbort.current?.abort(); localImportAbort.current = null;
     void localImporter.disconnect(); setLocalConnected(false); setLocalPhase('');
@@ -175,7 +179,7 @@ export default function CommercialHome() {
       connectionStoreRef.current = undefined; connectionListVersion.current += 1;
       connectionOwnerRef.current = nextOwner; setConnectionOwner(nextOwner);
       setConnectionStore(undefined); setSavedConnections({}); setConnectionStorageError('');
-      if (previousOwner) { localImportAbort.current?.abort(); void localImporter.disconnect(); setLocalConnected(false); connectionAutofill.reset(); mediaSelection.reset(); setImportId(''); setMediaId(''); setPreview(null); setDestinations({}); setConfirmed(false); setManagementView(''); }
+      if (previousOwner) { setImportFailure(null); localImportAbort.current?.abort(); void localImporter.disconnect(); setLocalConnected(false); connectionAutofill.reset(); mediaSelection.reset(); setImportId(''); setMediaId(''); setPreview(null); setDestinations({}); setConfirmed(false); setManagementView(''); }
     }
     if (!me.roles.includes('admin') && !me.roles.includes('operator')) {
       connectionStoreRef.current = undefined; setConnectionStore(undefined); setSavedConnections({});
@@ -247,8 +251,23 @@ export default function CommercialHome() {
 
   async function action(name: string, task: () => Promise<void>) {
     const identity = sessionIdentity(); const version = ++actionVersion.current;
-    setBusy(name); setError(''); setNotice('');
-    try { await task(); } catch (err) { if (version === actionVersion.current && identity === sessionIdentity()) { if ((err as Error).name === 'AbortError') setNotice('영상 가져오기를 취소했습니다.'); else setError(failures[(err as Error).message] || (err as Error).message); } }
+    setBusy(name); setError(''); setImportFailure(null); setNotice('');
+    try { await task(); } catch (err) {
+      if (version === actionVersion.current && identity === sessionIdentity()) {
+        if ((err as Error).name === 'AbortError') setNotice('영상 가져오기를 취소했습니다.');
+        else {
+          const message = failures[(err as Error).message] || (err as Error).message;
+          if (name === 'import' || name === 'local-connect') {
+            const titles: Record<LocalImportPhase, string> = { requesting: '가져오기 요청에 실패했습니다.',
+              downloading: '내 컴퓨터에서 영상을 내려받지 못했습니다.', transferring: '영상 파일을 전달하지 못했습니다.',
+              uploading: '보관함 업로드에 실패했습니다.', validating: '업로드 완료 확인에 실패했습니다.' };
+            setImportFailure({ title: name === 'local-connect' ? '도우미를 연결하지 못했습니다.'
+              : err instanceof LocalImportError ? titles[err.phase] : '영상 가져오기를 시작하지 못했습니다.',
+              message, connect: name === 'local-connect' });
+          } else setError(message);
+        }
+      }
+    }
     finally { if (version === actionVersion.current) setBusy(''); }
   }
   function currentConnectionStore() {
@@ -560,9 +579,11 @@ export default function CommercialHome() {
             onChange={event => setSourceName(event.target.value)} /></details>
           <Button type="submit" className="source-import-button" disabled={!localConnected || !canOperate || !!busy || !connected || !health || !sourcePlatform || !sourceUrl.trim() || importPending}>
             {busy === 'import' ? <LoaderCircle size={16} className="source-spinner" aria-hidden="true" /> : <Download size={16} aria-hidden="true" />}
-            {busy === 'import' ? localPhase === 'uploading' ? '내 컴퓨터에서 보관함에 업로드 중…' : localPhase === 'validating' ? '업로드 완료 확인 중…' : '내 컴퓨터에서 가져오는 중…' : importPending ? '영상 검사 중…' : '영상 가져오기'}
+            {busy === 'import' ? localPhase === 'requesting' ? '가져오기 요청 중…' : localPhase === 'uploading' ? '내 컴퓨터에서 보관함에 업로드 중…' : localPhase === 'validating' ? '업로드 완료 확인 중…' : '내 컴퓨터에서 가져오는 중…' : importPending ? '영상 검사 중…' : '영상 가져오기'}
           </Button>
           {busy === 'import' && <output className="local-import-progress"><span>이 창과 도우미를 켜두세요.</span><button type="button" onClick={() => localImportAbort.current?.abort(new DOMException('가져오기 취소', 'AbortError'))}>가져오기 취소</button></output>}
+          {importFailure && <LocalImportFailure failure={importFailure} disabled={!!busy || !canOperate || !connected || importPending}
+            onRetry={() => void importSource()} onUpload={() => { setSourceMode('file'); setImportFailure(null); }} />}
           {!sourceCatalog && <p className="hint failure">원본 플랫폼 목록을 불러오지 못했습니다.<button type="button" className="source-retry-link" disabled={!!busy} onClick={() => void action('reconnect', refresh)}>다시 불러오기</button></p>}
         </form> : <div className="source-file-upload"><span className="studio-upload-symbol"><Upload size={27} /></span><h3>기기에 저장된 영상으로 시작</h3><p>원본 MP4 파일을 선택해 주세요.</p>
           <p className="hint">MP4 · 최대 {health?.max_upload_mb ?? '—'} MB{health ? ` · ${clock(health.max_duration_seconds)} 이내` : ''}</p>

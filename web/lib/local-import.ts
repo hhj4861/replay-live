@@ -1,7 +1,10 @@
 import { api, assertSessionIdentity, sessionIdentity } from './api';
 
 export const LOCAL_IMPORT_URL = 'http://127.0.0.1:17833';
-export type LocalImportPhase = 'downloading' | 'transferring' | 'uploading' | 'validating';
+export type LocalImportPhase = 'requesting' | 'downloading' | 'transferring' | 'uploading' | 'validating';
+export class LocalImportError extends Error {
+  constructor(message: string, readonly phase: LocalImportPhase) { super(message); this.name = 'LocalImportError'; }
+}
 type Pairing = { token: string; identity: string; direct: boolean };
 type LocalJob = { id: string; state: string; error_code?: string; bytes?: number; sha256?: string; media_id?: string; phase?: LocalImportPhase };
 const unavailable = '영상 가져오기 도우미를 실행하고 브라우저의 내 컴퓨터 연결 권한을 허용해 주세요.';
@@ -88,8 +91,10 @@ export function createLocalImporter() {
       const bounded = AbortSignal.any([signal, AbortSignal.timeout(540_000)]);
       let id = '';
       let completed = false;
+      let phase: LocalImportPhase = 'requesting';
+      const reportPhase = (next: LocalImportPhase) => { phase = next; onPhase(next); };
       try {
-        onPhase('downloading');
+        reportPhase('requesting');
         const ticket = await api<{ id: string; token: string }>('/device-imports', {
           method: 'POST', signal: bounded, headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ...input, name: input.name.trim() || `${input.provider}-recording.mp4` }),
@@ -100,19 +105,28 @@ export function createLocalImporter() {
         // Only an opaque, single-task capability crosses to the paired PC.
         let job = await (await request('/cloud-imports', { method: 'POST', signal: bounded,
           headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, token: ticket.token }) }, owner)).json() as LocalJob;
+        const reportJobPhase = () => {
+          if (job.phase === 'requesting' || job.phase === 'downloading' || job.phase === 'uploading' || job.phase === 'validating') reportPhase(job.phase);
+          else reportPhase('downloading');
+        };
         while (job.state === 'downloading' || job.state === 'cancelling') {
-          if (job.phase === 'uploading' || job.phase === 'validating') onPhase(job.phase);
+          reportJobPhase();
           await pause(bounded); assertOwner(owner);
           job = await (await request(`/imports/${id}`, { signal: bounded }, owner)).json() as LocalJob;
         }
         assertOwner(owner); bounded.throwIfAborted();
+        reportJobPhase();
         if (job.state !== 'ready') throw new Error(job.error_code || 'SOURCE_UNAVAILABLE');
         if (job.id !== id || job.media_id !== id) throw new Error('가져오기 결과가 요청한 작업과 다릅니다.');
+        reportPhase('validating');
         const result = await api<{ state: string; media: T }>(`/device-imports/${id}`, { signal: bounded });
         assertOwner(owner);
         if (result.state !== 'completed' || !result.media) throw new Error('클라우드 업로드 완료를 확인하지 못했습니다.');
         completed = true;
         return result.media;
+      } catch (error) {
+        if (signal.aborted) throw error;
+        throw new LocalImportError(error instanceof Error ? error.message : 'DEVICE_IMPORT_TASK_FAILED', phase);
       } finally {
         if (id) {
           await request(`/imports/${id}`, { method: 'DELETE' }, owner, 3000).catch(() => undefined);
