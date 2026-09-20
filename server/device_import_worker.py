@@ -84,6 +84,8 @@ def run_device_import(id, token, *, api, output, downloader, check_active, on_ph
         destination = urlsplit(signed['url'])
         host = destination.hostname or ''
         trusted = (destination.netloc == urlsplit(api).netloc
+                   or (destination.netloc == 'replay-live-storage.guswhd1085.workers.dev'
+                       and destination.path.startswith('/objects/replay/'))
                    or (destination.netloc == 'vercel.com' and destination.path == '/api/blob/')
                    or host.endswith('.blob.vercel-storage.com')
                    or host == 'blob.vercel-storage.com' or host.endswith('.amazonaws.com'))
