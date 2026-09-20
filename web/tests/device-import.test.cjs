@@ -32,7 +32,7 @@ function fixture(options = {}) {
       if (init.method === 'DELETE') return new Response(null, { status: 204 });
       if (path === '/cloud-imports') {
         options.onStart?.();
-        return Response.json(options.failed ? { id, state: 'failed', error_code: 'SOURCE_BOT_CHECK_REQUIRED' }
+        return Response.json(options.failed ? { id, state: 'failed', error_code: options.errorCode || 'SOURCE_BOT_CHECK_REQUIRED', phase: options.phase }
           : { id, state: 'ready', media_id: id });
       }
       throw new Error('Browser attempted an unexpected file transfer');
@@ -80,3 +80,15 @@ test('user cancellation after delegation cannot report success or transfer media
   await assert.rejects(f.client.runCloud(input, controller.signal, () => {}), { name: 'AbortError' });
   assert.equal(f.cloud.at(-1).init.method, 'DELETE');
 });
+
+for (const [phase, errorCode] of [['requesting', 'DEVICE_IMPORT_TASK_FAILED'], ['downloading', 'SOURCE_BOT_CHECK_REQUIRED'], ['uploading', 'DEVICE_IMPORT_UPLOAD_FAILED'], ['validating', 'DEVICE_IMPORT_COMPLETE_FAILED']]) {
+  test(`terminal ${phase} failure preserves its phase even when no progress poll preceded it`, async () => {
+    const f = fixture({ failed: true, phase, errorCode }); await f.client.pair('code');
+    const phases = [];
+    await assert.rejects(f.client.runCloud(input, new AbortController().signal, value => phases.push(value)), error => {
+      assert.equal(error.name, 'LocalImportError'); assert.equal(error.message, errorCode); assert.equal(error.phase, phase); return true;
+    });
+    assert.equal(phases.at(-1), phase);
+    assert.equal(f.cloud.at(-1).init.method, 'DELETE');
+  });
+}
