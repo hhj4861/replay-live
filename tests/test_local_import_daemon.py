@@ -74,6 +74,43 @@ def test_browser_preflight_and_limited_pair_attempts(daemon):
     assert client.post('/pair', json={'code': CODE}).status_code == 429
 
 
+def test_code_discovery_returns_current_code_without_creating_a_session(daemon):
+    client, manager = daemon
+    for code in (CODE, '123456ABCDEF'):
+        manager.pairing_code = code
+        response = client.get('/pairing-code')
+        assert response.status_code == 200
+        assert response.json() == {'code': code, 'version': 1}
+        assert response.headers['cache-control'] == 'no-store'
+        assert response.headers['access-control-allow-origin'] == ORIGIN
+    assert not manager.sessions
+    assert not manager.pair_attempts
+    assert client.get('/session').status_code == 401
+
+
+@pytest.mark.parametrize('headers', [
+    {'Origin': 'https://evil.example'}, {'Origin': 'null'}, {'Origin': ''},
+    {'Origin': ORIGIN + '.evil.example'}, {'Origin': ORIGIN + '/'},
+    {'Host': 'evil.example'}, {'Host': 'localhost:17833'}, {'X-Replay-Local': ''},
+])
+def test_code_discovery_rejects_untrusted_or_simple_requests(daemon, headers):
+    client, _ = daemon
+    response = client.get('/pairing-code', headers=headers)
+    assert response.status_code == 403
+    assert CODE not in response.text
+
+
+def test_code_discovery_preflight(daemon):
+    client, _ = daemon
+    response = client.options('/pairing-code', headers={
+        'Access-Control-Request-Method': 'GET',
+        'Access-Control-Request-Headers': 'x-replay-local',
+        'Access-Control-Request-Private-Network': 'true'})
+    assert response.status_code == 204
+    assert response.headers['access-control-allow-origin'] == ORIGIN
+    assert response.headers['access-control-allow-private-network'] == 'true'
+
+
 def test_file_integrity_idempotency_and_session_isolation(daemon):
     client, manager = daemon
     owner = pair(client)
