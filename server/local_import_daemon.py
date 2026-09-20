@@ -322,6 +322,13 @@ def create_local_import_app(*, origins=DEFAULT_ORIGINS, manager=None, port=PORT)
             raise HTTPException(401, '내 컴퓨터를 먼저 연결하세요.')
         return service.authenticate(authorization[7:], request.headers.get('origin'))
 
+    @app.get('/pairing-code')
+    def pairing_code():
+        # The boundary above requires an exact trusted Origin, loopback Host,
+        # and a non-simple header. This is intentionally available before pairing
+        # so the trusted web UI can fill the current PC's code without persistence.
+        return {'code': service.pairing_code, 'version': 1}
+
     @app.post('/pair')
     def pair(payload: Pair, request: Request):
         return service.pair(payload.code, request.headers['origin'])

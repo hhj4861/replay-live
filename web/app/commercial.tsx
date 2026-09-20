@@ -557,7 +557,7 @@ export default function CommercialHome() {
             {canOperate && <button type="button" className="studio-delete" aria-label={`${item.name} 삭제`} disabled={!!busy || ['importing', 'validating', 'pending'].includes(item.status)} onClick={() => void action('delete', async () => { await api(`/media/${item.id}`, { method: 'DELETE' }); setMedia(current => current.filter(value => value.id !== item.id)); if (item.id === importId) setImportId(''); setNotice('보관함에서 영상을 삭제했습니다.'); })}><Trash2 size={16} /></button>}
           </li>)}</ul>{!media.length && <div className="studio-library-empty"><Library size={24} /><p>아직 보관한 영상이 없어요.</p><button type="button" onClick={() => setSourceMode('link')}>영상 링크로 추가하기 <ArrowRight size={14} /></button></div>}
           <p className="hint studio-retention">영상과 결과 파일은 {health?.retention_days ?? '—'}일 동안 보관됩니다.</p></div> : sourceMode === 'link' ? <form className="source-import-form" onSubmit={importSource}>
-          <LocalImportConnection connected={localConnected} busy={busy === 'local-connect'} disabled={!canOperate || (!!busy && busy !== 'local-connect')}
+          <LocalImportConnection key={sessionIdentity()} onLoadCode={localImporter.readPairingCode} connected={localConnected} busy={busy === 'local-connect'} disabled={!canOperate || (!!busy && busy !== 'local-connect')}
             onConnect={connectLocal} onDisconnect={() => { void localImporter.disconnect(); setLocalConnected(false); }} />
           <label htmlFor="source-provider">원본 영상 플랫폼</label>
           <select id="source-provider" value={sourceProvider} disabled={!sourceCatalog || !!busy || importPending}

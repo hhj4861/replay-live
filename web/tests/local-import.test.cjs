@@ -111,3 +111,41 @@ test('stopped daemon clears the connected state and does not try the cloud impor
   assert.equal(env.client.isConnected(), false);
   assert.equal(env.calls.filter(call => call.route === '/imports').length, 1);
 });
+
+test('code discovery reads the current daemon on every load without pairing or cloud credentials', async () => {
+  let current = '123456ABCDEF';
+  const env = environment(route => route === '/pairing-code' ? Response.json({ code: current, version: 1 }) : null);
+  assert.equal(await env.client.readPairingCode(new AbortController().signal), current);
+  current = 'ABCDEF123456';
+  assert.equal(await env.client.readPairingCode(new AbortController().signal), current);
+  assert.equal(env.client.isConnected(), false);
+  assert.equal(env.calls.length, 2);
+  for (const { url, options } of env.calls) {
+    assert.equal(url, 'http://127.0.0.1:17833/pairing-code');
+    assert.equal(options.headers.get('Authorization'), null);
+    assert.equal(options.headers.get('X-Replay-Local'), '1');
+    assert.equal(options.credentials, 'omit');
+    assert.equal(options.cache, 'no-store');
+    assert.equal(options.redirect, 'error');
+    assert.equal(options.targetAddressSpace, 'loopback');
+  }
+});
+
+test('code discovery rejects outdated daemons and malformed responses', async () => {
+  for (const result of [{ code: '123456ABCDEF', version: 2 }, { code: 'invalid', version: 1 }, { version: 1 }]) {
+    const env = environment(route => route === '/pairing-code' ? Response.json(result) : null);
+    await assert.rejects(env.client.readPairingCode(new AbortController().signal), /최신 버전/);
+  }
+  const legacy = environment(() => Response.json({ detail: 'Not Found' }, { status: 404 }));
+  await assert.rejects(legacy.client.readPairingCode(new AbortController().signal));
+  const stopped = environment(() => { throw new TypeError('Failed to fetch'); });
+  await assert.rejects(stopped.client.readPairingCode(new AbortController().signal), /도우미를 실행/);
+});
+
+test('logout and cancellation discard a pending code response', async () => {
+  const controller = new AbortController();
+  const env = environment(() => { controller.abort(); return Response.json({ code: '123456ABCDEF', version: 1 }); });
+  await assert.rejects(env.client.readPairingCode(controller.signal), { name: 'AbortError' });
+  const changed = environment(() => { changed.switchAccount(); return Response.json({ code: '123456ABCDEF', version: 1 }); });
+  await assert.rejects(changed.client.readPairingCode(new AbortController().signal), /account changed/);
+});
