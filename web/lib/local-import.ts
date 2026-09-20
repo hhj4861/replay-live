@@ -62,6 +62,17 @@ export function createLocalImporter() {
   return {
     isConnected: () => !!pairing && pairing.identity === sessionIdentity(),
     disconnect,
+    async readPairingCode(this: void, signal: AbortSignal) {
+      const identity = sessionIdentity();
+      const response = await request('/pairing-code', { signal });
+      const result = await response.json() as { code?: unknown; version?: unknown };
+      assertSessionIdentity(identity);
+      signal.throwIfAborted();
+      if (result.version !== 1 || typeof result.code !== 'string' || !/^[A-F0-9]{12}$/.test(result.code)) {
+        throw new Error('도우미의 연결 코드를 확인할 수 없습니다. 도우미를 최신 버전으로 다시 실행해 주세요.');
+      }
+      return result.code;
+    },
     async pair(code: string) {
       const identity = sessionIdentity();
       const cleanup = disconnect();
