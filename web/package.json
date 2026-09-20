@@ -13,6 +13,7 @@
     "format": "oxfmt",
     "lint:all": "oxlint",
     "build:vercel": "vite build --config vite.vercel.config.ts",
+    "build:pages": "vite build --config vite.pages.config.ts",
     "test:client": "node --test tests/*.test.cjs",
     "test:blob": "node --experimental-transform-types --test tests/blob-control*.test.ts",
     "dev:commercial": "REPLAY_COMMERCIAL=1 vite --config vite.vercel.config.ts"

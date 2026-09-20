@@ -33,6 +33,7 @@ from .repository import Repository, RepositoryError, NotFound, Conflict, PROCESS
 from .media_sources import SourceImportError, normalize_source, source_platforms
 from .secrets import AWSKMSKeyProvider, LocalKeyringProvider, EnvironmentAESGCMKeyProvider
 from .blob_storage import VercelBlobStorage
+from .r2_storage import R2Storage
 from .dispatch_wakeup import DispatchWakeup
 from .settings import Settings
 from .telemetry import configure_telemetry, event
@@ -141,6 +142,8 @@ def create_production_app(settings=None, *, repository=None, storage=None, keys=
     elif cfg.mode == 'development':
         objects = LocalStorage(Path(cfg.local_root) / 'objects', signing_key=cfg.callback_key,
                                base_url=cfg.public_url, allow_development=True)
+    elif cfg.storage_provider == 'cloudflare-r2':
+        objects = R2Storage(control_url=cfg.blob_control_url, control_token=cfg.control_token)
     elif cfg.storage_provider == 'vercel-blob':
         objects = VercelBlobStorage(control_url=cfg.blob_control_url, control_token=cfg.control_token)
     else:

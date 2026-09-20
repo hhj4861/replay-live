@@ -24,7 +24,7 @@ from .media_sources import SourceImportError, download_source, normalize_source
 from .request_boundary import BoundaryMiddleware
 
 PORT = 17833
-DEFAULT_ORIGINS = ('https://replay-live-poc.vercel.app', 'http://127.0.0.1:13101',
+DEFAULT_ORIGINS = ('https://replay-live.pages.dev', 'http://127.0.0.1:13101',
                    'http://127.0.0.1:3100', 'http://localhost:3100')
 MAX_BYTES = 50 * 1024**2
 MAX_DURATION = 120
@@ -83,7 +83,7 @@ class LocalJob:
 
 class LocalImports:
     def __init__(self, *, downloader=download_source, root=None, pairing_code=None, now=time.time,
-                 cloud_url='https://replay-live-api.vercel.app', cloud_client=None, development=False):
+                 cloud_url='https://replay-live-api.guswhd1085.workers.dev', cloud_client=None, development=False):
         from .device_import_worker import cloud_origin
         self.cloud_url = cloud_origin(cloud_url, development)
         self.cloud_client, self.development = cloud_client, development

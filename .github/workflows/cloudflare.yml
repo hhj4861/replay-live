@@ -1,0 +1,30 @@
+name: Cloudflare migration verification
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  cloudflare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: deploy/cloudflare/package-lock.json
+      - run: npm ci && npm run check && npm test
+        working-directory: deploy/cloudflare
+      - name: Build isolated API and media images
+        run: |
+          docker build -t replay-api-ci -f deploy/cloudflare/api.Dockerfile .
+          docker build -t replay-media-ci -f deploy/cloudflare/media.Dockerfile .
+          docker run --rm replay-media-ci python -c 'from server.media_runtime import require_verified_rtmps; require_verified_rtmps()'
+      - name: Pages build
+        working-directory: web
+        env:
+          REPLAY_API_URL: https://api.synthetic.workers.dev
+          REPLAY_LOGIN_PROVIDER: google
+        run: npm ci && npm run build:pages

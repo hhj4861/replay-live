@@ -198,9 +198,20 @@ export default function CommercialHome() {
   }, [connectionAutofill, mediaSelection, localImporter]);
   useEffect(() => {
     if (!authenticated) return;
-    const controller = new AbortController(); let active = true; let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => { try { await refresh(controller.signal); } catch { if (active) setConnected(false); } if (active) timer = setTimeout(poll, 3000); };
-    void poll(); return () => { active = false; controller.abort(); clearTimeout(timer); };
+    const controller = new AbortController(); let active = true; let running = false; let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      clearTimeout(timer);
+      if (!active || running || document.visibilityState === 'hidden') return;
+      running = true;
+      try { await refresh(controller.signal); } catch { if (active) setConnected(false); }
+      finally {
+        running = false;
+        if (active && !document.hidden) timer = setTimeout(poll, 3000);
+      }
+    };
+    const visible = () => { if (document.visibilityState === 'visible') void poll(); else clearTimeout(timer); };
+    document.addEventListener('visibilitychange', visible);
+    void poll(); return () => { active = false; controller.abort(); clearTimeout(timer); document.removeEventListener('visibilitychange', visible); };
   }, [authenticated, refresh]);
   useEffect(() => {
     connectionStoreRef.current = undefined; connectionListVersion.current += 1;
@@ -213,6 +224,7 @@ export default function CommercialHome() {
         if (!active) return;
         connectionStoreRef.current = store; setConnectionStore(store);
         const poll = async () => {
+          if (document.visibilityState === 'hidden') { if (active) timer = setTimeout(poll, 30_000); return; }
           const version = ++connectionListVersion.current;
           try {
             const result = await store.list();
