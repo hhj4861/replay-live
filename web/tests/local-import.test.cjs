@@ -149,3 +149,13 @@ test('logout and cancellation discard a pending code response', async () => {
   const changed = environment(() => { changed.switchAccount(); return Response.json({ code: '123456ABCDEF', version: 1 }); });
   await assert.rejects(changed.client.readPairingCode(new AbortController().signal), /account changed/);
 });
+
+
+test('cancelled auto-pair revokes the late token and never connects', async () => {
+  const controller = new AbortController();
+  const env = environment(route => { if (route === '/pair') controller.abort(); });
+  await assert.rejects(env.client.pair('code', controller.signal), { name: 'AbortError' });
+  assert.equal(env.client.isConnected(), false);
+  assert.equal(env.calls.at(-1).route, '/session');
+  assert.equal(env.calls.at(-1).options.method, 'DELETE');
+});

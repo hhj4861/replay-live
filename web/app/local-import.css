@@ -28,3 +28,8 @@
 .local-import-failure:focus-visible { outline: 2px solid #b42318; outline-offset: 3px; }
 .local-import-failure button { border: 1px solid currentColor; border-radius: 6px; padding: 7px 10px; font-size: 12px; }
 .local-import-failure button:disabled { opacity: .5; }
+.local-import-onboarding > p { color: #526174; font-size: 13px; line-height: 1.6; margin: 12px 0; }
+.local-import-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.local-import-actions a { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #cbd5e1; background: #fff; border-radius: 8px; padding: 9px 12px; color: #334155; font-size: 13px; }
+.local-import-actions a:focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; }
+.local-import-actions a[aria-disabled="true"] { opacity: .5; pointer-events: none; }

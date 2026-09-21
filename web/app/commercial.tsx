@@ -419,13 +419,11 @@ export default function CommercialHome() {
     await action('upload', () => sendUpload(file, sessionIdentity(), 'upload'));
     if (picker.current) picker.current.value = '';
   }
-  async function connectLocal(code: string) {
-    await action('local-connect', async () => {
-      setLocalConnected(false);
-      await localImporter.pair(code); setLocalConnected(localImporter.isConnected());
-      setNotice('내 컴퓨터를 연결했습니다. 영상 링크를 입력해 주세요.');
-    });
-  }
+  const connectLocal = useCallback(async (code: string, signal: AbortSignal) => {
+    await localImporter.pair(code, signal);
+    signal.throwIfAborted();
+    setLocalConnected(localImporter.isConnected());
+  }, [localImporter]);
   async function importSource(event?: React.SyntheticEvent<HTMLFormElement, SubmitEvent>) {
     event?.preventDefault();
     await action('import', async () => {
@@ -540,6 +538,8 @@ export default function CommercialHome() {
         if (identity === sessionIdentity() && (!revoked || !signedOut)) setError('이 기기에서는 로그아웃했습니다. 서버나 로그인 제공자의 세션 종료는 확인하지 못했습니다.');
       });
     }}>로그아웃</Button></div></header>
+    {canOperate && <LocalImportConnection key={sessionIdentity()} onLoadCode={localImporter.readPairingCode} connected={localConnected} disabled={!!busy}
+      onConnect={connectLocal} onDisconnect={() => { void localImporter.disconnect(); setLocalConnected(false); }} />}
     {managementView && account && connectionOwner ? <MemberManagement key={`${connectionOwner.identity}:${connectionOwner.tenant_id}:${connectionOwner.subject}:${managementView}`}
       mode={managementView} identity={connectionOwner.identity} account={account} targets={catalog?.targets || []}
       connections={Object.values(savedConnections)} location={connectionStore?.location ?? streamConnectionLocation()} connectionError={connectionStorageError}
@@ -569,8 +569,7 @@ export default function CommercialHome() {
             {canOperate && <button type="button" className="studio-delete" aria-label={`${item.name} 삭제`} disabled={!!busy || ['importing', 'validating', 'pending'].includes(item.status)} onClick={() => void action('delete', async () => { await api(`/media/${item.id}`, { method: 'DELETE' }); setMedia(current => current.filter(value => value.id !== item.id)); if (item.id === importId) setImportId(''); setNotice('보관함에서 영상을 삭제했습니다.'); })}><Trash2 size={16} /></button>}
           </li>)}</ul>{!media.length && <div className="studio-library-empty"><Library size={24} /><p>아직 보관한 영상이 없어요.</p><button type="button" onClick={() => setSourceMode('link')}>영상 링크로 추가하기 <ArrowRight size={14} /></button></div>}
           <p className="hint studio-retention">영상과 결과 파일은 {health?.retention_days ?? '—'}일 동안 보관됩니다.</p></div> : sourceMode === 'link' ? <form className="source-import-form" onSubmit={importSource}>
-          <LocalImportConnection key={sessionIdentity()} onLoadCode={localImporter.readPairingCode} connected={localConnected} busy={busy === 'local-connect'} disabled={!canOperate || (!!busy && busy !== 'local-connect')}
-            onConnect={connectLocal} onDisconnect={() => { void localImporter.disconnect(); setLocalConnected(false); }} />
+
           <label htmlFor="source-provider">원본 영상 플랫폼</label>
           <select id="source-provider" value={sourceProvider} disabled={!sourceCatalog || !!busy || importPending}
             onChange={event => setSourceProvider(event.target.value)}>
