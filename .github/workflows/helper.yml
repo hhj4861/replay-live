@@ -28,7 +28,13 @@ jobs:
         run: brew install ffmpeg
       - name: Install FFmpeg (Windows)
         if: runner.os == 'Windows'
-        run: choco install ffmpeg --no-progress -y
+        run: |
+          choco install ffmpeg --no-progress -y
+          # Use the real binaries, not Chocolatey's executable shims. A shim
+          # spawns another process and is not a distributable FFmpeg binary.
+          $media = Get-ChildItem "$env:ChocolateyInstall/lib/ffmpeg" -Filter ffmpeg.exe -Recurse | Select-Object -First 1
+          if (!$media -or !(Test-Path (Join-Path $media.DirectoryName 'ffprobe.exe'))) { throw 'FFmpeg binaries missing' }
+          $media.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Install locked Python dependencies
         run: python -m pip install -r desktop/requirements-build.txt
       - name: Desktop boundary and media tests
