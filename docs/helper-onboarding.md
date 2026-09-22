@@ -16,6 +16,19 @@
 
 브라우저 참고: [Client Hints](https://developer.chrome.com/docs/privacy-security/user-agent-client-hints), [download 속성의 한계](https://developer.mozilla.org/en-US/docs/Web/API/HTMLAnchorElement/download).
 
+## 화면 검증: headless 기본
+
+사용자 지시에 따라 화면 검증은 `scripts/helper-onboarding-headless.mjs`로 headless 브라우저에서 수행한다. 사용 중인 Chrome에 연결하거나 프로필을 재사용하지 않는다. 테스트 전용 임의 loopback 포트와 임시 프로필을 사용하며 성공/실패 후 브라우저·테스트 서버를 종료한다.
+
+```sh
+# web/node_modules에 Playwright가 있으면 모듈 경로 지정 생략 가능
+REPLAY_PLAYWRIGHT_MODULE=/path/to/playwright \
+REPLAY_CHROME_EXECUTABLE=/path/to/chrome \
+node scripts/helper-onboarding-headless.mjs
+```
+
+브라우저 실행 경로를 생략하면 Playwright가 설치한 Chromium을 사용한다. PC 정보와 loopback 도우미 응답, 릴리스 파일은 합성 fixture이며 외부 API 요청은 차단한다. Mac arm64/x64·Windows x64 선택, CPU 미확인 수동 선택, 확인 전 다운로드 없음, 확인 후 정확한 파일 다운로드, Escape/취소와 포커스 복귀, 공개 파일 없음/모바일 차단, 도우미 실행 후 자동 연결과 재로그인을 검증한다. 내려받는 fixture에는 실행 파일이 없으며 실제 OS 설치 검증으로 보고하지 않는다.
+
 ## 패키지 검증과 릴리스
 
 `python -m pip install -r desktop/requirements-build.txt`, 빌드 호스트에 FFmpeg/ffprobe를 설치한 다음 `python desktop/build.py --version 0.2.0`으로 생성한다. Python·yt-dlp·FFmpeg·ffprobe와 네이티브 라이브러리를 포함한다. 다른 OS용 교차 빌드는 하지 않으며 GitHub Actions가 macOS arm64/x64 및 Windows x64에서 각각 빌드·검증한 ZIP과 체크섬을 artifact로 보관한다. CI가 패키지를 공개하거나 실제 PC에 설치하지 않는다.

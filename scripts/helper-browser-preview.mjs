@@ -1,4 +1,4 @@
-// Native-browser verification surface: real component + real loopback pairing.
+// Browser verification surface: real component + real loopback pairing.
 // Login controls below are explicitly simulated; never uses cloud credentials.
 import { mkdtemp, writeFile, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -39,7 +39,7 @@ await writeFile(path.join(scratch, 'helper-release.json'), '{"version":null,"dow
 const server = await createServer({ configFile: false, root: scratch, publicDir:path.join(root,'web/public'), plugins:[react()],
   define:{__REPLAY_COMMERCIAL__:'false',__REPLAY_CLOUD__:'false'},
   resolve:{alias:{'@':path.join(root,'web'),react:path.join(root,'web/node_modules/react'), 'react-dom':path.join(root,'web/node_modules/react-dom')}},
-  server:{host:'127.0.0.1',port:3100,strictPort:true,fs:{allow:[root,scratch,await realpath(path.join(root,'web/node_modules'))]}}});
+  server:{host:'127.0.0.1',port:Number(process.env.REPLAY_HELPER_PREVIEW_PORT || 3100),strictPort:true,fs:{allow:[root,scratch,await realpath(path.join(root,'web/node_modules'))]}}});
 await server.listen();
-console.log('Native Chrome verification: http://127.0.0.1:3100');
+console.log('Helper browser verification: ' + server.resolvedUrls.local[0]);
 for (const signal of ['SIGINT','SIGTERM']) process.on(signal,async()=>{await server.close();await rm(scratch,{recursive:true,force:true});process.exit(0);});

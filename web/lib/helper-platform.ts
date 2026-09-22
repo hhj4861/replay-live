@@ -17,9 +17,9 @@ export async function detectHelperPlatform(nav: DeviceNavigator = navigator): Pr
       || (/Mac/i.test(platform) && (nav.maxTouchPoints || 0) > 1)) {
     return { os: 'unsupported', label: null, message: '모바일에서는 도우미를 설치할 수 없습니다. Windows 또는 Mac에서 이용해 주세요.' };
   }
-  const os = /Mac/i.test(platform) || /Macintosh/i.test(nav.userAgent) ? 'macos'
-    : /Win/i.test(platform) || /Windows/i.test(nav.userAgent) ? 'windows'
-      : /Linux|CrOS/i.test(platform + nav.userAgent) ? 'unsupported' : 'unknown';
+  const system = platform || nav.userAgent;
+  const os = /Mac/i.test(system) ? 'macos' : /Win/i.test(system) ? 'windows'
+    : /Linux|CrOS/i.test(system) ? 'unsupported' : 'unknown';
   if (os === 'unsupported') return { os, label: null, message: '현재 PC용 도우미는 제공하지 않습니다. MP4 파일 업로드를 이용해 주세요.' };
   let hints: Hints = {};
   if (data?.getHighEntropyValues) {

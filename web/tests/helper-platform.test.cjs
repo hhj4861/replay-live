@@ -19,6 +19,10 @@ test('selects the exact available desktop package using local CPU hints', async 
     assert.equal((await api().detectHelperPlatform(hints(os, arch))).label, label);
   }
 });
+test('explicit platform hints take precedence over a conflicting reduced User-Agent', async () => {
+  const nav = hints('Windows', 'x86'); nav.userAgent = 'Macintosh; Intel Mac OS X'; nav.platform = 'MacIntel';
+  assert.equal((await api().detectHelperPlatform(nav)).label, 'Windows x64');
+});
 test('never guesses Intel from a reduced Mac UA and handles denied hardware hints', async () => {
   const nav = { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', platform: 'MacIntel' };
   assert.equal((await api().detectHelperPlatform(nav)).label, null);
