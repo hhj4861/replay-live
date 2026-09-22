@@ -1,52 +1,137 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, ChevronDown, LoaderCircle, Monitor, PlugZap, RefreshCw } from 'lucide-react';
+import { Check, ChevronDown, Download, LoaderCircle, Monitor, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { helperRelease, type HelperRelease } from '@/lib/helper-release';
+import { detectHelperPlatform, platformDownloads, requestHelperDownload, type HelperPlatform } from '@/lib/helper-platform';
 import './local-import.css';
 
-export default function LocalImportConnection({ connected, busy, disabled, onLoadCode, onConnect, onDisconnect }: {
-  connected: boolean; busy: boolean; disabled: boolean;
+export default function LocalImportConnection({ connected, disabled, onLoadCode, onConnect, onDisconnect, installOpen = false, onInstallClose }: {
+  connected: boolean; disabled: boolean; installOpen?: boolean; onInstallClose?: () => void;
   onLoadCode: (signal: AbortSignal) => Promise<string>;
-  onConnect: (code: string) => Promise<void>; onDisconnect: () => void;
+  onConnect: (code: string, signal: AbortSignal) => Promise<void>; onDisconnect: () => void;
 }) {
   const [code, setCode] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [codeError, setCodeError] = useState('');
-  const [codeNotice, setCodeNotice] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [paused, setPaused] = useState(false);
+  const [release, setRelease] = useState<HelperRelease | null>(null);
+  const [releaseError, setReleaseError] = useState('');
+  const [launchRequested, setLaunchRequested] = useState(false);
+  const [platform, setPlatform] = useState<HelperPlatform | null>(null);
+  const [chosenLabel, setChosenLabel] = useState('');
+  const [showInstall, setShowInstall] = useState(false);
+  const installDialog = useRef<HTMLDialogElement | null>(null);
+  const [downloadRequested, setDownloadRequested] = useState(false);
+  const downloads = platformDownloads(release, platform);
+  const selected = downloads.find(item => item.label === (chosenLabel || platform?.label));
   const pending = useRef<AbortController | null>(null);
-  const loadCode = useCallback(() => {
-    pending.current?.abort();
+  const lastAttempt = useRef(0);
+  const connect = useCallback(async (manualCode?: string) => {
+    if (pending.current) return;
     const controller = new AbortController();
-    pending.current = controller;
-    return onLoadCode(controller.signal).then(value => {
-      if (!controller.signal.aborted) { setCode(value); setCodeNotice('이 컴퓨터의 연결 코드를 불러왔습니다. 내 컴퓨터 연결을 눌러 주세요.'); }
-    }, () => {
-      if (!controller.signal.aborted) setCodeError('연결 코드를 불러오지 못했습니다. 최신 도우미를 실행하고 브라우저의 내 컴퓨터 연결 권한을 허용한 뒤 다시 불러오세요. 실행 창의 코드를 직접 입력할 수도 있습니다.');
-    }).finally(() => {
-      if (!controller.signal.aborted) { pending.current = null; setLoading(false); }
-    });
-  }, [onLoadCode]);
-  function resetCode() { setLoading(true); setCode(''); setCodeError(''); setCodeNotice(''); }
-  function reloadCode() { resetCode(); void loadCode(); }
+    pending.current = controller; lastAttempt.current = Date.now();
+    try {
+      await Promise.resolve();
+      controller.signal.throwIfAborted();
+      setLoading(true); setError('');
+      const value = manualCode || await onLoadCode(controller.signal);
+      controller.signal.throwIfAborted();
+      setCode(value);
+      await onConnect(value, controller.signal);
+      controller.signal.throwIfAborted();
+      setCode(''); setLaunchRequested(false);
+    } catch (failure) {
+      if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : '도우미 연결을 확인해 주세요.');
+    } finally {
+      if (pending.current === controller) { pending.current = null; setLoading(false); }
+    }
+  }, [onLoadCode, onConnect]);
   useEffect(() => {
-    if (!connected) void loadCode();
-    return () => { pending.current?.abort(); };
-  }, [connected, loadCode]);
-  async function connect() { await onConnect(code); }
+    if (connected || disabled || paused) return;
+    const initial = setTimeout(() => { void connect(); }, 0);
+    const focus = () => { if (Date.now() - lastAttempt.current > 10_000) void connect(); };
+    window.addEventListener('focus', focus);
+    return () => { clearTimeout(initial); window.removeEventListener('focus', focus); pending.current?.abort(); pending.current = null; };
+  }, [connected, disabled, paused, connect]);
+  useEffect(() => {
+    let active = true;
+    void detectHelperPlatform().then(value => { if (active) setPlatform(value); });
+    return () => { active = false; };
+  }, []);
+  useEffect(() => {
+    const dialog = installDialog.current;
+    if (!dialog) return;
+    if ((installOpen || showInstall) && !connected) { if (!dialog.open) dialog.showModal(); }
+    else if (dialog.open) dialog.close();
+  }, [installOpen, showInstall, connected]);
+  useEffect(() => {
+    const controller = new AbortController();
+    void helperRelease(controller.signal).then(setRelease, failure => {
+      if (!controller.signal.aborted) setReleaseError(failure instanceof Error ? failure.message : '설치 파일 안내를 확인해 주세요.');
+    });
+    return () => controller.abort();
+  }, []);
+  useEffect(() => {
+    if (!launchRequested || connected || disabled || paused) return;
+    let attempts = 0;
+    const timer = setInterval(() => {
+      if (++attempts > 15) { clearInterval(timer); setLaunchRequested(false); }
+      else void connect();
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [launchRequested, connected, disabled, paused, connect]);
+  function closeInstall() { setShowInstall(false); onInstallClose?.(); }
+  function confirmInstall() {
+    if (disabled || !selected) return;
+    if (requestHelperDownload(selected)) {
+      setDownloadRequested(true); setPaused(false); setLaunchRequested(true);
+    } else setError('설치 파일 다운로드를 시작하지 못했습니다. 잠시 후 다시 확인해 주세요.');
+  }
+  const deviceChoice = release && platform && platform.os !== 'unsupported' && !platform.label && downloads.length > 0
+    ? <label>PC 종류 <select aria-label="도우미를 설치할 PC 종류" value={chosenLabel} disabled={disabled} onChange={event => setChosenLabel(event.target.value)}>
+      <option value="">PC 종류 선택</option>{downloads.map(item => <option key={item.label} value={item.label}>{item.label}</option>)}
+    </select></label> : null;
+  function retry() { setPaused(false); void connect(); }
   return <section className={`local-import-connection ${connected ? 'is-connected' : ''}`} aria-label="영상 가져오기 도우미">
-    <div className="local-import-heading"><Monitor size={20} aria-hidden="true" /><div><strong>내 컴퓨터에서 가져오기</strong><p>도우미가 영상을 내려받아 내 보관함에 직접 업로드해요.</p></div>
-      <span className="local-import-badge">{connected ? <><Check size={13} />연결됨</> : '연결 필요'}</span></div>
-    {connected ? <div className="local-import-connected"><p>보관함에 저장될 때까지 이 창과 도우미를 켜두세요.</p><button type="button" disabled={disabled || busy} onClick={() => { resetCode(); onDisconnect(); }}>연결 해제</button></div>
-      : <><div className="local-import-pair"><label htmlFor="local-import-code">도우미 연결 코드</label><div><Input id="local-import-code" type="password" autoComplete="off" spellCheck={false}
-        placeholder={loading ? '도우미에서 코드를 불러오는 중' : '자동으로 불러오거나 직접 입력'} value={code} maxLength={64} disabled={disabled || busy}
-        aria-describedby="local-import-code-status"
-        onChange={event => { pending.current?.abort(); pending.current = null; setLoading(false); setCodeError(''); setCodeNotice(''); setCode(event.target.value); }}
-        onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); if (code.trim() && !busy && !disabled && !loading) void connect(); } }} />
-        <Button type="button" variant="outline" disabled={disabled || busy || loading} onClick={reloadCode}>{loading ? <LoaderCircle size={15} className="source-spinner" /> : <RefreshCw size={15} />}코드 불러오기</Button>
-        <Button type="button" variant="outline" disabled={disabled || busy || loading || !code.trim()} onClick={() => void connect()}>{busy ? <LoaderCircle size={15} className="source-spinner" /> : <PlugZap size={15} />}내 컴퓨터 연결</Button></div>
-        <p id="local-import-code-status" className={codeError ? 'local-import-code-error' : 'local-import-code-status'} role={codeError ? 'alert' : 'status'}>{codeError || (loading ? '이 컴퓨터에서 실행 중인 도우미를 찾고 있습니다.' : codeNotice || '도우미를 켜면 이 컴퓨터의 코드를 불러올 수 있습니다.')}</p></div>
-        <details className="local-import-setup"><summary>처음 연결하나요?<ChevronDown size={14} /></summary><ol><li>이 컴퓨터의 Replay Live 프로젝트 폴더에서 최신 도우미를 실행하세요.<code>.venv/bin/python scripts/local-import-daemon.py</code></li><li>브라우저가 내 컴퓨터 연결 권한을 요청하면 허용하세요.</li><li>코드가 자동으로 채워지면 내 컴퓨터 연결을 누르세요. 비어 있다면 코드 불러오기를 누르거나 실행 창의 코드를 입력하세요.</li></ol><p>새로고침·재로그인하면 실행 중인 도우미의 현재 코드를 다시 불러옵니다. 코드는 이 PC의 도우미를 재시작할 때 바뀌며 브라우저에 저장하지 않습니다.</p></details></>}
+    <div className="local-import-heading"><Monitor size={20} aria-hidden="true" /><div><strong>내 컴퓨터에서 영상 가져오기</strong><p>도우미가 이 PC에서 영상을 내려받아 로그인한 계정의 보관함에 업로드합니다.</p></div>
+      <output className="local-import-badge">{connected ? <><Check size={13} />연결됨</> : loading ? '연결 확인 중' : paused ? '연결 해제됨' : '도우미 연결 필요'}</output></div>
+    {connected ? <div className="local-import-connected"><p>영상 가져오기가 끝날 때까지 이 창과 도우미를 켜두세요.</p><button type="button" disabled={disabled} onClick={() => { setPaused(true); setCode(''); onDisconnect(); }}>연결 해제</button></div>
+      : <div className="local-import-onboarding">
+        <output>{loading ? '이 컴퓨터의 도우미를 찾아 자동으로 연결하고 있습니다.' : paused ? '자동 연결을 멈췄습니다. 다시 연결하려면 다시 확인을 누르세요.' : 'PC에 맞는 도우미를 준비합니다. 설치되어 있다면 도우미 실행을 눌러 주세요.'}</output>
+        <p>{platform?.message || '이 PC의 운영체제와 CPU 정보를 확인하고 있습니다.'}</p>
+        <div className="local-import-actions">
+          <Button type="button" variant="outline" disabled={disabled} onClick={() => setShowInstall(true)}><Download size={15} />도우미 설치 안내</Button>
+          <a href="replay-live-helper://start" aria-disabled={disabled} onClick={event => { if (disabled) { event.preventDefault(); return; } setPaused(false); setLaunchRequested(true); }}>도우미 실행</a>
+          <Button type="button" variant="outline" disabled={disabled || loading} onClick={retry}>{loading ? <LoaderCircle size={15} className="source-spinner" /> : <RefreshCw size={15} />}다시 확인</Button>
+        </div>
+        {downloadRequested && <output>설치 파일 다운로드를 요청했습니다. 시작되지 않았다면 설치 안내에서 다시 다운로드해 주세요. 내려받은 파일을 열어 설치를 승인하면 자동으로 연결됩니다.</output>}
+        {release && platform?.label && !selected && <p>이 PC용 설치 파일은 아직 준비 중입니다.</p>}
+        {!release && <p className="hint">{releaseError || '설치 파일은 아직 배포 준비 중입니다. 설치된 도우미를 실행하거나 MP4 파일 업로드를 이용해 주세요.'}</p>}
+        {launchRequested && <output>브라우저의 앱 열기를 허용해 주세요. 실행 후 자동으로 다시 연결합니다.</output>}
+        {error && <p className="local-import-code-error" role="alert">{error} 설치 여부와 실행 상태를 확인하고, 브라우저가 이 컴퓨터 연결 권한을 요청하면 허용해 주세요.</p>}
+        <details className="local-import-setup"><summary>설치와 자동 실행 안내<ChevronDown size={14} /></summary><ol><li>자동 선택된 설치 파일을 내려받아 압축을 풀고 Replay Live Helper를 여세요. 웹페이지는 프로그램 설치를 직접 승인할 수 없습니다.</li><li>설치 창에서 설치와 PC 로그인 시 자동 실행을 허용하세요. 설치가 끝나면 웹으로 돌아오세요.</li><li>이후 웹 로그인·새로고침 때 실행 중인 도우미와 자동으로 연결합니다.</li></ol><p>도우미 설정에서 자동 시작을 끄거나 제거할 수 있습니다. 연결 정보는 이 웹페이지의 메모리에만 두고 로그아웃·계정 변경 때 폐기합니다.</p></details>
+        <details className="local-import-setup"><summary>연결 코드 직접 입력<ChevronDown size={14} /></summary><div className="local-import-pair"><label htmlFor="local-import-code">도우미 연결 코드</label><div><Input id="local-import-code" type="password" autoComplete="off" spellCheck={false} value={code} maxLength={64} disabled={disabled || loading} onChange={event => setCode(event.target.value)} />
+          <Button type="button" variant="outline" disabled={disabled || loading || !code.trim()} onClick={() => { setPaused(false); void connect(code); }}>코드로 연결</Button></div></div></details>
+      </div>}
+    <dialog ref={installDialog} className="helper-install-dialog" aria-labelledby="helper-install-title" aria-describedby="helper-install-description" onCancel={closeInstall} onClose={closeInstall}>
+      <h2 id="helper-install-title">영상 가져오기에 도우미가 필요합니다</h2>
+      <p id="helper-install-description">이 PC에서 영상을 내려받으려면 Replay Live 도우미를 설치하고 실행해야 합니다. 이미 설치했다면 도우미 실행을 눌러 주세요.</p>
+      <p>{platform?.message || 'PC 정보를 확인하고 있습니다.'}</p>
+      {deviceChoice}
+      {selected && <p>선택한 설치 파일: <strong>{selected.label}</strong></p>}
+      {!release && <output>{releaseError || '설치 파일은 아직 배포 준비 중입니다. 현재는 설치된 도우미를 실행하거나 MP4 파일 업로드를 이용해 주세요.'}</output>}
+      {release && platform?.label && !selected && <output>이 PC용 설치 파일은 아직 준비 중입니다.</output>}
+      <p>확인을 누르면 설치 파일을 다운로드합니다. 내려받은 파일을 열어 설치와 자동 시작을 승인한 뒤 이 페이지로 돌아오세요. 도우미가 연결되면 입력한 링크로 영상 가져오기를 다시 누르세요.</p>
+      {downloadRequested && <output>다운로드를 요청했습니다. 파일을 받은 뒤 실행해 주세요. 시작되지 않았다면 확인을 다시 누르세요.</output>}
+      {error && <p role="alert">{error}</p>}
+      <div className="local-import-actions">
+        <Button type="button" variant="outline" onClick={closeInstall}>취소</Button>
+        <a href="replay-live-helper://start" aria-disabled={disabled} onClick={event => { if (disabled) { event.preventDefault(); return; } setPaused(false); setLaunchRequested(true); }}>도우미 실행</a>
+        <Button type="button" disabled={disabled || !selected} onClick={confirmInstall}>확인 · 설치 파일 다운로드</Button>
+      </div>
+    </dialog>
   </section>;
 }

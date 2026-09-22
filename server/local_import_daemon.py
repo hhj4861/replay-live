@@ -52,6 +52,7 @@ class CloudImport(BaseModel):
 class Pair(BaseModel):
     model_config = {'extra': 'forbid'}
     code: str = Field(min_length=1, max_length=64, repr=False)
+    client_id: str | None = Field(default=None, pattern=r'^[a-f0-9-]{36}$')
 
 
 class Import(BaseModel):
@@ -93,24 +94,27 @@ class LocalImports:
         self.pairing_code = pairing_code or secrets.token_hex(6).upper()
         self.lock = threading.RLock()
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='replay-import')
-        self.sessions, self.jobs = {}, {}
+        self.sessions, self.jobs, self.browser_sessions = {}, {}, {}
         self.pair_attempts = []
         self.closing = False
 
-    def pair(self, code, origin):
+    def pair(self, code, origin, client_id=None):
         with self.lock:
             self.sweep()
             self.pair_attempts = [at for at in self.pair_attempts if at > self.now() - 60]
             if len(self.pair_attempts) >= 5:
                 raise HTTPException(429, '연결 시도가 많습니다. 1분 뒤 다시 시도하세요.')
-            self.pair_attempts.append(self.now())
             if not hmac.compare_digest(code.upper().encode(), self.pairing_code.encode()):
+                self.pair_attempts.append(self.now())
                 raise HTTPException(401, '도우미에 표시된 연결 코드를 확인하세요.')
+            if client_id and (previous := self.browser_sessions.get((origin, client_id))):
+                self.revoke(previous)
             if len(self.sessions) >= 8:
                 raise HTTPException(409, '연결된 창이 많습니다. 사용하지 않는 창의 연결을 해제하세요.')
             token = secrets.token_urlsafe(32)
             key = hashlib.sha256(token.encode()).hexdigest()
             self.sessions[key] = (origin, self.now() + SESSION_TTL)
+            if client_id: self.browser_sessions[(origin, client_id)] = key
             return {'token': token, 'expires_at': self.sessions[key][1], 'version': 1,
                     'features': ['cloud-direct-upload']}
 
@@ -237,6 +241,8 @@ class LocalImports:
     def revoke(self, owner):
         with self.lock:
             self.sessions.pop(owner, None)
+            for browser, key in list(self.browser_sessions.items()):
+                if key == owner: self.browser_sessions.pop(browser, None)
             for job in list(self.jobs.values()):
                 if job.owner == owner:
                     self.remove(job.id, owner)
@@ -327,11 +333,11 @@ def create_local_import_app(*, origins=DEFAULT_ORIGINS, manager=None, port=PORT)
         # The boundary above requires an exact trusted Origin, loopback Host,
         # and a non-simple header. This is intentionally available before pairing
         # so the trusted web UI can fill the current PC's code without persistence.
-        return {'code': service.pairing_code, 'version': 1}
+        return {'code': service.pairing_code, 'version': 1, 'features': ['tab-reconnect']}
 
     @app.post('/pair')
     def pair(payload: Pair, request: Request):
-        return service.pair(payload.code, request.headers['origin'])
+        return service.pair(payload.code, request.headers['origin'], payload.client_id)
 
     @app.get('/session')
     def session(user=Depends(owner)):

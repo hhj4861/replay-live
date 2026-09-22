@@ -65,13 +65,18 @@ def terminate_process_group(process):
 
 def _bounded_command(command, timeout, max_output_bytes=None):
     # A separate exec wrapper applies limits without preexec_fn in a threaded API.
-    return [sys.executable, str(Path(__file__).resolve()), '--bounded-exec',
+    return [sys.executable, *([] if getattr(sys, 'frozen', False) else [str(Path(__file__).resolve())]), '--bounded-exec',
             str(max(1, math.ceil(timeout))), str(os.getpid()),
             str(MAX_OUTPUT_BYTES if max_output_bytes is None else max_output_bytes), *map(str, command)]
 
 
 def _execute(command, *, timeout, stall_timeout=None, on_progress=None, on_start=None,
              should_stop=None, redactions=(), on_stdout=None, output_path=None, max_output_bytes=None):
+    if sys.platform == 'win32':
+        from .local_media import windows_execute
+        return windows_execute(command, timeout=timeout, stall_timeout=stall_timeout, on_progress=on_progress,
+            on_start=on_start, should_stop=should_stop, redactions=redactions, on_stdout=on_stdout,
+            output_path=output_path, max_output_bytes=max_output_bytes)
     if should_stop and should_stop():
         return -1, 0.0, False, None, '', True
     started = last_progress = time.monotonic()

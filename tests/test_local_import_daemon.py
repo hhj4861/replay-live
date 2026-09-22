@@ -80,7 +80,7 @@ def test_code_discovery_returns_current_code_without_creating_a_session(daemon):
         manager.pairing_code = code
         response = client.get('/pairing-code')
         assert response.status_code == 200
-        assert response.json() == {'code': code, 'version': 1}
+        assert response.json() == {'code': code, 'version': 1, 'features': ['tab-reconnect']}
         assert response.headers['cache-control'] == 'no-store'
         assert response.headers['access-control-allow-origin'] == ORIGIN
     assert not manager.sessions
@@ -184,3 +184,18 @@ def test_expiry_removes_abandoned_files(daemon):
     manager.sweep()
     assert client.get('/imports/' + id, headers=owner).status_code == 404
     assert not list(manager.root.iterdir())
+
+
+def test_same_tab_reload_replaces_capability_without_filling_session_slots(daemon):
+    client, manager = daemon
+    old = None
+    for _ in range(12):
+        response = client.post('/pair', json={'code': CODE, 'client_id': 'a' * 36})
+        assert response.status_code == 200
+        if old:
+            assert client.get('/session', headers={'Authorization': 'Bearer ' + old}).status_code == 401
+        old = response.json()['token']
+        assert len(manager.sessions) == 1
+    other = client.post('/pair', json={'code': CODE, 'client_id': 'b' * 36})
+    assert other.status_code == 200 and len(manager.sessions) == 2
+    assert client.get('/session', headers={'Authorization': 'Bearer ' + old}).status_code == 200
