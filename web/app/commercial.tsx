@@ -115,6 +115,7 @@ export default function CommercialHome() {
   const [mediaSelection] = useState(() => createMediaSelection());
   const [localImporter] = useState(() => createLocalImporter());
   const [localConnected, setLocalConnected] = useState(false);
+  const [helperInstallOpen, setHelperInstallOpen] = useState(false);
   const [localPhase, setLocalPhase] = useState<LocalImportPhase | ''>('');
   const localImportAbort = useRef<AbortController | null>(null);
   const uploading = useRef<XMLHttpRequest | null>(null);
@@ -153,7 +154,7 @@ export default function CommercialHome() {
     setEvents([]); setConfirmed(false); setBusy(''); setError(''); setImportFailure(null); setNotice(''); setUploadProgress(0);
     setTitle(''); setTargets([]); setSchedule(''); setStartMode('now'); setHistoryFilter('all');
     localImportAbort.current?.abort(); localImportAbort.current = null;
-    void localImporter.disconnect(); setLocalConnected(false); setLocalPhase('');
+    void localImporter.disconnect(); setHelperInstallOpen(false); setLocalConnected(false); setLocalPhase('');
     setSourceCatalog(undefined); setSourceMode('link'); setSourceProvider('youtube'); setSourceUrl(''); setSourceName(''); setImportId('');
     connectionStoreRef.current = undefined; connectionOwnerRef.current = undefined; connectionListVersion.current += 1;
     setConnectionOwner(undefined); setConnectionStore(undefined); setSavedConnections({}); setConnectionStorageError('');
@@ -179,7 +180,7 @@ export default function CommercialHome() {
       connectionStoreRef.current = undefined; connectionListVersion.current += 1;
       connectionOwnerRef.current = nextOwner; setConnectionOwner(nextOwner);
       setConnectionStore(undefined); setSavedConnections({}); setConnectionStorageError('');
-      if (previousOwner) { setImportFailure(null); localImportAbort.current?.abort(); void localImporter.disconnect(); setLocalConnected(false); connectionAutofill.reset(); mediaSelection.reset(); setImportId(''); setMediaId(''); setPreview(null); setDestinations({}); setConfirmed(false); setManagementView(''); }
+      if (previousOwner) { setImportFailure(null); localImportAbort.current?.abort(); void localImporter.disconnect(); setHelperInstallOpen(false); setLocalConnected(false); connectionAutofill.reset(); mediaSelection.reset(); setImportId(''); setMediaId(''); setPreview(null); setDestinations({}); setConfirmed(false); setManagementView(''); }
     }
     if (!me.roles.includes('admin') && !me.roles.includes('operator')) {
       connectionStoreRef.current = undefined; setConnectionStore(undefined); setSavedConnections({});
@@ -419,22 +420,21 @@ export default function CommercialHome() {
     await action('upload', () => sendUpload(file, sessionIdentity(), 'upload'));
     if (picker.current) picker.current.value = '';
   }
-  async function connectLocal(code: string) {
-    await action('local-connect', async () => {
-      setLocalConnected(false);
-      await localImporter.pair(code); setLocalConnected(localImporter.isConnected());
-      setNotice('내 컴퓨터를 연결했습니다. 영상 링크를 입력해 주세요.');
-    });
-  }
+  const connectLocal = useCallback(async (code: string, signal: AbortSignal) => {
+    await localImporter.pair(code, signal);
+    signal.throwIfAborted();
+    setLocalConnected(localImporter.isConnected());
+    setHelperInstallOpen(false);
+  }, [localImporter]);
   async function importSource(event?: React.SyntheticEvent<HTMLFormElement, SubmitEvent>) {
     event?.preventDefault();
     await action('import', async () => {
       const identity = sessionIdentity();
       if (importPending || !sourcePlatform || !health) throw new Error('원본 플랫폼과 진행 중인 가져오기를 확인하세요.');
-      if (!localImporter.isConnected()) { setLocalConnected(false); throw new Error('내 컴퓨터를 먼저 연결해 주세요.'); }
       let url: URL;
       try { url = new URL(sourceUrl.trim()); } catch { throw new Error('녹화 영상의 전체 HTTPS 링크를 입력하세요.'); }
       if (url.protocol !== 'https:' || (url.port && url.port !== '443') || url.username || url.password || url.hash || url.href.length > 4096) throw new Error('계정 정보나 # 조각 주소가 없는 HTTPS 영상 링크를 입력하세요.');
+      if (!localImporter.isConnected()) { setLocalConnected(false); setHelperInstallOpen(true); return; }
       const maxBytes = Math.min(health.max_upload_mb * 1024 ** 2, usage?.storage_available_bytes ?? Infinity, 50 * 1024 ** 2);
       if (maxBytes < 1) throw new Error('보관함의 저장 공간이 부족합니다.');
       const controller = new AbortController(); localImportAbort.current = controller;
@@ -540,6 +540,8 @@ export default function CommercialHome() {
         if (identity === sessionIdentity() && (!revoked || !signedOut)) setError('이 기기에서는 로그아웃했습니다. 서버나 로그인 제공자의 세션 종료는 확인하지 못했습니다.');
       });
     }}>로그아웃</Button></div></header>
+    {canOperate && <LocalImportConnection key={sessionIdentity()} installOpen={helperInstallOpen} onInstallClose={() => setHelperInstallOpen(false)} onLoadCode={localImporter.readPairingCode} connected={localConnected} disabled={!!busy}
+      onConnect={connectLocal} onDisconnect={() => { void localImporter.disconnect(); setHelperInstallOpen(false); setLocalConnected(false); }} />}
     {managementView && account && connectionOwner ? <MemberManagement key={`${connectionOwner.identity}:${connectionOwner.tenant_id}:${connectionOwner.subject}:${managementView}`}
       mode={managementView} identity={connectionOwner.identity} account={account} targets={catalog?.targets || []}
       connections={Object.values(savedConnections)} location={connectionStore?.location ?? streamConnectionLocation()} connectionError={connectionStorageError}
@@ -569,8 +571,7 @@ export default function CommercialHome() {
             {canOperate && <button type="button" className="studio-delete" aria-label={`${item.name} 삭제`} disabled={!!busy || ['importing', 'validating', 'pending'].includes(item.status)} onClick={() => void action('delete', async () => { await api(`/media/${item.id}`, { method: 'DELETE' }); setMedia(current => current.filter(value => value.id !== item.id)); if (item.id === importId) setImportId(''); setNotice('보관함에서 영상을 삭제했습니다.'); })}><Trash2 size={16} /></button>}
           </li>)}</ul>{!media.length && <div className="studio-library-empty"><Library size={24} /><p>아직 보관한 영상이 없어요.</p><button type="button" onClick={() => setSourceMode('link')}>영상 링크로 추가하기 <ArrowRight size={14} /></button></div>}
           <p className="hint studio-retention">영상과 결과 파일은 {health?.retention_days ?? '—'}일 동안 보관됩니다.</p></div> : sourceMode === 'link' ? <form className="source-import-form" onSubmit={importSource}>
-          <LocalImportConnection key={sessionIdentity()} onLoadCode={localImporter.readPairingCode} connected={localConnected} busy={busy === 'local-connect'} disabled={!canOperate || (!!busy && busy !== 'local-connect')}
-            onConnect={connectLocal} onDisconnect={() => { void localImporter.disconnect(); setLocalConnected(false); }} />
+
           <label htmlFor="source-provider">원본 영상 플랫폼</label>
           <select id="source-provider" value={sourceProvider} disabled={!sourceCatalog || !!busy || importPending}
             onChange={event => setSourceProvider(event.target.value)}>
@@ -589,7 +590,7 @@ export default function CommercialHome() {
           <details className="studio-optional-field"><summary>보관함 이름 지정 <span>선택</span><ChevronDown size={14} /></summary><label htmlFor="source-name">보관함 이름 <span className="optional">선택</span></label>
           <Input id="source-name" maxLength={180} placeholder="예: 신제품 소개 녹화본" value={sourceName} disabled={!!busy || importPending}
             onChange={event => setSourceName(event.target.value)} /></details>
-          <Button type="submit" className="source-import-button" disabled={!localConnected || !canOperate || !!busy || !connected || !health || !sourcePlatform || !sourceUrl.trim() || importPending}>
+          <Button type="submit" className="source-import-button" disabled={!canOperate || !!busy || !connected || !health || !sourcePlatform || !sourceUrl.trim() || importPending}>
             {busy === 'import' ? <LoaderCircle size={16} className="source-spinner" aria-hidden="true" /> : <Download size={16} aria-hidden="true" />}
             {busy === 'import' ? localPhase === 'requesting' ? '가져오기 요청 중…' : localPhase === 'uploading' ? '내 컴퓨터에서 보관함에 업로드 중…' : localPhase === 'validating' ? '업로드 완료 확인 중…' : '내 컴퓨터에서 가져오는 중…' : importPending ? '영상 검사 중…' : '영상 가져오기'}
           </Button>

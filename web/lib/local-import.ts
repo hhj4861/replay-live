@@ -22,6 +22,17 @@ export function createLocalImporter() {
   // Separate capability, kept only in memory. Never send the cloud bearer here.
   let pairing: Pairing | undefined;
   let generation = 0;
+  let tabReconnect = false;
+  function clientId() {
+    // A non-secret tab identifier replaces stale local sessions after reload.
+    // It never authenticates a request; the current daemon code is still required.
+    const key = 'replay-helper-tab';
+    try {
+      const saved = sessionStorage.getItem(key);
+      if (saved && /^[a-f0-9-]{36}$/.test(saved)) return saved;
+      const id = crypto.randomUUID(); sessionStorage.setItem(key, id); return id;
+    } catch { return crypto.randomUUID(); }
+  }
 
   async function request(path: string, init: RequestInit = {}, owner?: Pairing, timeout = 12_000) {
     const headers = new Headers(init.headers);
@@ -65,27 +76,32 @@ export function createLocalImporter() {
     async readPairingCode(this: void, signal: AbortSignal) {
       const identity = sessionIdentity();
       const response = await request('/pairing-code', { signal });
-      const result = await response.json() as { code?: unknown; version?: unknown };
+      const result = await response.json() as { code?: unknown; version?: unknown; features?: string[] };
       assertSessionIdentity(identity);
       signal.throwIfAborted();
       if (result.version !== 1 || typeof result.code !== 'string' || !/^[A-F0-9]{12}$/.test(result.code)) {
         throw new Error('도우미의 연결 코드를 확인할 수 없습니다. 도우미를 최신 버전으로 다시 실행해 주세요.');
       }
+      tabReconnect = result.features?.includes('tab-reconnect') === true;
       return result.code;
     },
-    async pair(code: string) {
+    async pair(code: string, signal?: AbortSignal) {
       const identity = sessionIdentity();
+      signal?.throwIfAborted();
       const cleanup = disconnect();
       const version = generation;
       await cleanup;
       assertSessionIdentity(identity);
+      signal?.throwIfAborted();
       if (version !== generation) throw new Error('연결 요청이 취소됐습니다.');
       const result = await (await request('/pair', { method: 'POST',
-        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: code.trim() }) })).json() as { token: string; version: number; features?: string[] };
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: code.trim(), ...(tabReconnect ? { client_id: clientId() } : {}) }) })).json() as { token: string; version: number; features?: string[] };
       if (result.version !== 1 || !/^[A-Za-z0-9_-]{43}$/.test(result.token)) throw new Error('도우미를 최신 버전으로 실행해 주세요.');
       const candidate = { token: result.token, identity, direct: result.features?.includes('cloud-direct-upload') === true };
       try {
         assertSessionIdentity(identity);
+        // Read a late response even on cancellation, then revoke its capability.
+        signal?.throwIfAborted();
         if (version !== generation) throw new Error('연결 요청이 취소됐습니다.');
         pairing = candidate;
       } catch (error) {

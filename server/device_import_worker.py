@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from .media_sources import SourceImportError, normalize_source
-from .worker import output_chunks
+from .local_media import output_chunks
 
 DEFAULT_CLOUD_URL = 'https://replay-live-api.guswhd1085.workers.dev'
 
