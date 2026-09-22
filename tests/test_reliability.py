@@ -244,6 +244,18 @@ def test_linux_encoder_dies_when_watchdog_parent_is_killed(tmp_path):
 
 
 def test_database_lock_recovers_scheduler_and_does_not_consume_shared_capacity(tmp_path, media_clips):
+    def completed(service, job_id):
+        # The observer uses the same deliberately short timeout as the scheduler.
+        # Retry only transient read contention within wait_for's existing deadline;
+        # a locked or unfinished job must still fail the completion assertion.
+        try:
+            job = service.get_job(job_id)
+        except sqlite3.OperationalError as error:
+            if error.sqlite_errorcode not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                raise
+            return False
+        return job if job['state'] == 'completed' else False
+
     capacity = threading.BoundedSemaphore(1)
     first = Service(tmp_path / 'one', capacity=capacity, sqlite_timeout=.04, poll_interval=.02)
     second = Service(tmp_path / 'two', capacity=capacity, sqlite_timeout=.04, poll_interval=.02)
@@ -261,13 +273,13 @@ def test_database_lock_recovers_scheduler_and_does_not_consume_shared_capacity(t
         assert capacity.acquire(blocking=False), 'A failed database claim leaked shared capacity'
         capacity.release()
         second.start()
-        wait_for(lambda: second.get_job(second_job['id'])['state'] == 'completed')
+        wait_for(lambda: completed(second, second_job['id']))
         lock.rollback()
         lock.close()
         lock = None
-        wait_for(lambda: first.get_job(first_job['id'])['state'] == 'completed')
+        recovered = wait_for(lambda: completed(first, first_job['id']))
         wait_for(lambda: first.readiness()['ready'])
-        assert first.get_job(first_job['id'])['attempt'] == 1
+        assert recovered['attempt'] == 1
     finally:
         if lock:
             lock.rollback()
