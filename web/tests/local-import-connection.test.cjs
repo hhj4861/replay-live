@@ -11,9 +11,9 @@ const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTa
   module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
 function nodes(node) { return Array.isArray(node) ? node.flatMap(nodes) : !node || typeof node !== 'object' ? [] : [node, ...nodes(node.props?.children)]; }
 const text = node => [node].flat().map(value => typeof value === 'string' ? value : value?.props ? text(value.props.children) : '').join('');
-function environment() {
+function environment(options = {}) {
   const listeners = new Map();
-  const slots = []; let cursor = 0; const effects = []; const requests = []; const connections = [];
+  const slots = []; let cursor = 0; const effects = []; const requests = []; const connections = []; const downloads = [];
   const hooks = { ...react,
     useState(initial) { const i = cursor++; if (!(i in slots)) slots[i] = initial; return [slots[i], value => { slots[i] = value; }]; },
     useRef(initial) { const i = cursor++; return slots[i] ||= { current: initial }; },
@@ -32,7 +32,12 @@ function environment() {
     if (name === '@/components/ui/button') return { Button: 'button' };
     if (name === '@/components/ui/input') return { Input: 'input' };
     if (name === 'lucide-react') return new Proxy({}, { get: (_, key) => String(key) });
-    if (name === '@/lib/helper-release') return { helperRelease: async () => null };
+    if (name === '@/lib/helper-release') return { helperRelease: async () => options.release || null };
+    if (name === '@/lib/helper-platform') return {
+      detectHelperPlatform: async () => options.platform || { os: 'macos', label: 'macOS Apple Silicon', message: 'Mac 감지됨' },
+      platformDownloads: release => release?.downloads || [],
+      requestHelperDownload: item => { downloads.push(item); return true; },
+    };
     if (name.endsWith('.css')) return {};
     throw new Error(name);
   } });
@@ -41,7 +46,7 @@ function environment() {
     onConnect: async value => { connections.push(value); }, onDisconnect() {} };
   function render(next = {}) { props = { ...props, ...next }; cursor = 0; const tree = loaded.exports.default(props); effects.splice(0).forEach(effect => effect()); return tree; }
   render();
-  return { render, requests, connections, listeners,
+  return { render, requests, connections, listeners, downloads,
     input: () => nodes(render()).find(node => node.type === 'input'),
     button: label => nodes(render()).find(node => node.type === 'button' && text(node.props.children) === label),
     dispose: () => slots.forEach(slot => slot?.cleanup?.()),
@@ -95,4 +100,34 @@ test('reload gets a fresh code and disabled operations do not start pairing', as
   second.requests[0].resolve('123456ABCDEF'); await flush();
   assert.equal(second.connections.length, 0);
   second.dispose();
+});
+
+const release = { version: '0.2.0', downloads: [{ label: 'macOS Apple Silicon', url: 'https://example.invalid/mac.zip', sha256: 'a'.repeat(64) }] };
+test('login and an unavailable helper never start a download without confirmation', async () => {
+  const env = environment({ release }); await flush(); env.requests[0].reject(new Error('offline')); await flush();
+  env.render({ installOpen: true }); await flush();
+  assert.equal(env.downloads.length, 0);
+  const confirm = env.button('확인 · 설치 파일 다운로드');
+  assert.equal(confirm.props.disabled, false);
+  confirm.props.onClick(); await flush();
+  assert.equal(env.downloads.length, 1); assert.equal(env.downloads[0].label, 'macOS Apple Silicon');
+  assert.match(text(env.render()), /다운로드를 요청했습니다/);
+  env.dispose();
+});
+test('cancel does not download, and unpublished packages keep confirmation disabled', async () => {
+  let closes = 0;
+  const env = environment(); await flush(); env.render({ installOpen: true, onInstallClose: () => closes++ });
+  assert.equal(env.button('확인 · 설치 파일 다운로드').props.disabled, true);
+  env.button('취소').props.onClick();
+  assert.equal(closes, 1); assert.equal(env.downloads.length, 0);
+  env.dispose();
+});
+test('unknown CPU requires a choice before confirmation', async () => {
+  const env = environment({ release, platform: { os: 'macos', label: null, message: 'PC 선택 필요' } }); await flush();
+  assert.equal(env.button('확인 · 설치 파일 다운로드').props.disabled, true);
+  const select = nodes(env.render()).find(node => node.type === 'select');
+  select.props.onChange({ target: { value: 'macOS Apple Silicon' } });
+  assert.equal(env.button('확인 · 설치 파일 다운로드').props.disabled, false);
+  assert.equal(env.downloads.length, 0);
+  env.dispose();
 });
