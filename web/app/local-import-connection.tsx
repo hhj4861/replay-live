@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Download, LoaderCircle, RefreshCw } from 'lucide-react';
+import { Check, CircleHelp, Download, ExternalLink, LoaderCircle, Monitor, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { helperRelease, type HelperRelease } from '@/lib/helper-release';
 import { detectHelperPlatform, platformDownloads, requestHelperDownload, type HelperPlatform } from '@/lib/helper-platform';
@@ -18,6 +18,7 @@ export default function LocalImportConnection({ onLoadCode, onConnect, onClose, 
   const [error, setError] = useState('');
   const [release, setRelease] = useState<HelperRelease | null>(null);
   const [releaseError, setReleaseError] = useState('');
+  const [releaseLoading, setReleaseLoading] = useState(true);
   const [platform, setPlatform] = useState<HelperPlatform | null>(null);
   const [waiting, setWaiting] = useState(false);
   const [downloadRequested, setDownloadRequested] = useState(false);
@@ -57,44 +58,70 @@ export default function LocalImportConnection({ onLoadCode, onConnect, onClose, 
     void detectHelperPlatform().then(value => { if (!controller.signal.aborted) setPlatform(value); });
     void helperRelease(controller.signal).then(value => { if (!controller.signal.aborted) setRelease(value); }, failure => {
       if (!controller.signal.aborted) setReleaseError(failure instanceof Error ? failure.message : '설치 파일 안내를 확인해 주세요.');
-    });
+    }).finally(() => { if (!controller.signal.aborted) setReleaseLoading(false); });
     return () => controller.abort();
   }, []);
   useEffect(() => {
     if (!waiting) return;
     const timer = setInterval(() => { void connect(); }, 2000);
-    const timeout = setTimeout(() => { setWaiting(false); setError('자동 연결 대기 시간이 지났습니다. 도우미 실행 후 다시 연결을 눌러 주세요.'); }, 5 * 60_000);
+    const timeout = setTimeout(() => { setWaiting(false); setError('아직 연결되지 않았어요. 도우미가 실행 중인지 확인하고 다시 시도해 주세요.'); }, 5 * 60_000);
     return () => { clearInterval(timer); clearTimeout(timeout); };
   }, [waiting, connect]);
   function cancel(upload = false) {
     closed.current = true; pending.current?.abort();
     if (upload) onUpload(); else onClose();
   }
+  function startHelper() { setError(''); setWaiting(true); }
+  function retry() { setError(''); void connect(); }
   function confirmInstall() {
     if (!selected || closed.current) return;
-    if (requestHelperDownload(selected)) { setDownloadRequested(true); setWaiting(true); }
+    if (requestHelperDownload(selected)) { setError(''); setDownloadRequested(true); setWaiting(true); }
     else setError('설치 파일 다운로드를 시작하지 못했습니다. 잠시 후 다시 시도해 주세요.');
   }
+  const unsupported = platform?.os === 'unsupported';
+  const checking = !platform || releaseLoading;
+  const connectionUnavailable = error === '영상 가져오기 도우미를 실행하고 브라우저의 내 컴퓨터 연결 권한을 허용해 주세요.';
+  const visibleError = connectionUnavailable ? (waiting ? '' : '실행 중인 도우미에 연결하지 못했어요.') : error;
   return <dialog ref={dialog} className="helper-install-dialog" aria-labelledby="helper-install-title" aria-describedby="helper-install-description"
     onCancel={event => { event.preventDefault(); cancel(); }}>
-    <h2 id="helper-install-title">링크 다운로드에 도우미가 필요해요</h2>
-    <p id="helper-install-description">도우미가 이 PC에서 영상을 내려받아 내 보관함에 업로드합니다. 설치 후 자동으로 연결하고 방금 요청한 링크를 계속 가져옵니다.</p>
-    <output aria-live="polite">{loading ? <><LoaderCircle size={16} className="source-spinner" />실행 중인 도우미를 확인하고 있습니다.</> : waiting ? '설치와 실행을 마치면 자동으로 이어집니다. 이 창을 열어 두세요.' : '설치된 도우미가 있다면 아래에서 실행해 주세요.'}</output>
-    <p>{platform?.message || '이 PC에 맞는 설치 파일을 확인하고 있습니다.'}</p>
-    {selected && <p>설치 파일: <strong>{selected.label}</strong></p>}
-    {!release && <output>{releaseError || '설치 파일은 아직 배포 준비 중입니다. 설치된 도우미를 실행하거나 MP4 파일을 업로드해 주세요.'}</output>}
-    {release && platform?.label && !selected && <output>이 PC용 설치 파일은 아직 준비 중입니다. MP4 파일을 업로드해 주세요.</output>}
-    {selected && <p>동의하면 설치 파일을 다운로드합니다. 내려받은 파일을 열고 운영체제의 설치·실행 승인을 완료해 주세요. 연결 코드나 PC 정보는 입력하지 않아도 됩니다.</p>}
-    {downloadRequested && <output>다운로드를 요청했습니다. 파일을 열어 설치해 주세요. 시작되지 않았다면 다운로드를 다시 누르세요.</output>}
-    {error && <p role="alert">{error} 브라우저가 내 컴퓨터 연결 권한을 요청하면 허용해 주세요.</p>}
-    <div className="local-import-actions">
-      <Button type="button" variant="outline" onClick={() => cancel()}>취소</Button>
-      <Button type="button" variant="outline" onClick={() => cancel(true)}>MP4 파일 업로드</Button>
-      <Button type="button" disabled={!selected} onClick={confirmInstall}><Download size={15} />{downloadRequested ? '설치 파일 다시 다운로드' : '동의하고 설치 파일 다운로드'}</Button>
+    <header className="helper-dialog-heading">
+      <span className="helper-dialog-icon"><Monitor size={22} aria-hidden="true" /></span>
+      <button type="button" className="helper-dialog-close" aria-label="도우미 연결 닫기" onClick={() => cancel()}><X size={20} aria-hidden="true" /></button>
+    </header>
+    <h2 id="helper-install-title">{unsupported ? 'MP4 파일로 가져와 주세요' : '도우미를 연결해 주세요'}</h2>
+    <p id="helper-install-description">{unsupported ? '이 기기에서는 도우미를 사용할 수 없어요.' : '이 PC에서 영상을 내려받아 내 보관함에 저장해요.'}</p>
+    <div className="helper-dialog-body">
+      {checking ? <output className="helper-dialog-status" aria-live="polite"><LoaderCircle size={16} className="source-spinner" aria-hidden="true" />이 PC에 맞는 방법을 확인하고 있어요.</output> : <>
+        {selected && <span className="helper-device"><Monitor size={14} aria-hidden="true" />{selected.label}</span>}
+        {!unsupported && <ol className="helper-connect-steps" aria-label="도우미 연결 순서">
+          {selected && (!waiting || downloadRequested) ? <>
+            <li className={downloadRequested ? 'is-complete' : 'is-current'} aria-current={!downloadRequested ? 'step' : undefined}><span>{downloadRequested ? <Check size={14} aria-hidden="true" /> : '1'}</span><div><strong>설치 파일 다운로드</strong></div></li>
+            <li className={downloadRequested ? 'is-current' : ''} aria-current={downloadRequested ? 'step' : undefined}><span>2</span><div><strong>내려받은 파일 열어 설치</strong>{downloadRequested && <p>운영체제의 설치·실행 안내를 따라 주세요.</p>}</div></li>
+            <li><span>3</span><div><strong>연결되면 영상 가져오기 시작</strong></div></li>
+          </> : <>
+            <li className="is-current" aria-current="step"><span>1</span><div><strong>설치된 도우미 실행</strong></div></li>
+            <li><span>2</span><div><strong>연결되면 영상 가져오기 시작</strong></div></li>
+          </>}
+        </ol>}
+        {!selected && !unsupported && <p className="helper-availability">{releaseError || (platform?.label ? '새 설치 파일은 준비 중이에요. 이미 설치했다면 바로 실행할 수 있어요.' : platform?.message)}</p>}
+        {visibleError && !unsupported && <p className="helper-dialog-error" role="alert">{visibleError}</p>}
+        <div className="helper-primary-action">
+          {unsupported ? <Button type="button" onClick={() => cancel(true)}>MP4 파일 업로드</Button>
+            : waiting ? <output className="helper-dialog-status" aria-live="polite"><LoaderCircle size={16} className="source-spinner" aria-hidden="true" />{downloadRequested ? '설치 후 자동으로 연결돼요. 이 창을 열어 두세요.' : '도우미가 열리면 자동으로 연결돼요.'}</output>
+            : selected ? <Button type="button" onClick={confirmInstall}><Download size={16} aria-hidden="true" />동의하고 다운로드</Button>
+            : <a href="replay-live-helper://start" onClick={startHelper}>도우미 실행<ExternalLink size={16} aria-hidden="true" /></a>}
+          {selected && !waiting && <a className="helper-existing-link" href="replay-live-helper://start" onClick={startHelper}>이미 설치했어요 · 도우미 실행</a>}
+        </div>
+      </>}
+      {!unsupported && <details className="helper-dialog-help">
+        <summary><CircleHelp size={15} aria-hidden="true" />연결이 안 되나요?</summary>
+        <div>
+          <p>브라우저가 앱 열기나 내 컴퓨터 연결 권한을 요청하면 허용해 주세요. 도우미가 실행 중이면 연결을 다시 확인할 수 있어요.</p>
+          <button type="button" disabled={loading} onClick={retry}>다시 연결</button>
+          {selected && downloadRequested && <button type="button" onClick={confirmInstall}>설치 파일 다시 다운로드</button>}
+        </div>
+      </details>}
     </div>
-    <div className="local-import-actions">
-      <a href="replay-live-helper://start" onClick={() => setWaiting(true)}>설치된 도우미 실행</a>
-      <Button type="button" variant="ghost" disabled={loading} onClick={() => void connect()}><RefreshCw size={15} />다시 연결</Button>
-    </div>
+    {!unsupported && <footer className="helper-dialog-footer"><span>도우미 없이 진행하려면</span><button type="button" onClick={() => cancel(true)}>MP4 파일 업로드</button></footer>}
   </dialog>;
 }
