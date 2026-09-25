@@ -17,12 +17,13 @@ import { createMediaSelection } from './media-selection';
 import { createLocalImporter, LocalImportError, type LocalImportPhase } from '@/lib/local-import';
 import LocalImportConnection from './local-import-connection';
 import LocalImportFailure, { type ImportFailure } from './local-import-failure';
+import SourceLinkHelp from './source-link-help';
 import './commercial-studio.css';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
 import { Radio, Upload, Play, Square, Download, Trash2, ChevronDown, Link as LinkIcon, LoaderCircle,
-  Check, ArrowRight, Video, Library, CalendarClock, Clock3, CircleHelp, ArrowUpRight, X, History, UserRound, Users } from 'lucide-react';
+  Check, ArrowRight, Video, Library, CalendarClock, Clock3, ArrowUpRight, X, History, UserRound, Users } from 'lucide-react';
 
 type Media = { id: string; name: string; status: string; bytes: number; duration: number; error_code?: string };
 type Job = BroadcastLinks & { id: string; title: string; media_id: string; media_name?: string; target: string; state: string; progress: number; duration: number; scheduled: number; error_code?: string };
@@ -599,19 +600,16 @@ export default function CommercialHome() {
             onChange={event => setSourceProvider(event.target.value)}>
             {sourceCatalog?.sources.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
           </select>
-          <p className="hint">원본 영상이 올라가 있는 플랫폼을 선택하세요.</p>
-          <label htmlFor="source-url">녹화 영상 링크</label>
+          <div className="source-link-label"><label htmlFor="source-url">녹화 영상 링크</label><SourceLinkHelp key={sourceProvider} provider={sourceProvider} note={sourcePlatform?.note} /></div>
           <Input id="source-url" type="url" autoComplete="off" autoCapitalize="none" spellCheck={false} required maxLength={4096}
-            aria-describedby="source-link-help" placeholder={sourceProvider === 'direct' ? 'https://…/recording.mp4' : 'https://…'}
+            aria-describedby={health ? 'source-link-limits' : undefined} placeholder={sourceProvider === 'direct' ? 'https://…/recording.mp4' : 'https://…'}
             value={sourceUrl} disabled={!!busy || importPending} onChange={event => setSourceUrl(event.target.value)} />
-          <div id="source-link-help" className="source-link-help"><p className="hint">{sourceProvider === 'youtube' ? '이 컴퓨터에서 공개 영상을 가져옵니다. 영상에 따라 로그인·봇 확인으로 제한될 수 있습니다.' : sourcePlatform?.note || '공개된 녹화 영상 한 편의 링크 또는 HTTPS MP4 다운로드 링크를 입력하세요.'}</p>
-            {health && <p className="hint">영상당 최대 {clock(Math.min(health.max_duration_seconds, 120))} · {Math.min(health.max_upload_mb, 50)} MB</p>}
-            {sourceProvider === 'youtube' && <details><summary><Download size={14} />내 YouTube 영상을 가져오지 못할 때<ChevronDown size={14} /></summary><p className="hint">YouTube Studio → 콘텐츠 → 해당 영상의 메뉴(⋮) → 다운로드에서 MP4를 저장한 뒤, 파일 업로드를 선택하세요. 현재 길이·용량 제한을 넘는 영상은 편집 후 업로드해 주세요.</p><p className="hint">Replay Live의 Google 로그인으로 YouTube의 서버 접근 제한이 해제되지는 않습니다.</p><a className="source-retry-link" href="https://support.google.com/youtube/answer/56100?hl=ko" target="_blank" rel="noreferrer">YouTube 공식 다운로드 안내 <ArrowUpRight size={13} aria-hidden="true" /></a></details>}
-            <details><summary><CircleHelp size={14} />가져올 수 있는 영상 안내<ChevronDown size={14} /></summary><p className="hint">공개 녹화 영상 한 편을 가져올 수 있습니다. 생방송·재생목록이나 접근이 제한된 영상은 원본 MP4 파일을 업로드하세요.</p><p className="hint">Google 앱 로그인은 영상 플랫폼의 접근 권한과 별개입니다. 비공개 원본은 접근 가능한 MP4 다운로드 링크(만료 전)를 입력하거나 파일로 업로드하세요.</p></details>
-          </div>
-          <details className="studio-optional-field"><summary>보관함 이름 지정 <span>선택</span><ChevronDown size={14} /></summary><label htmlFor="source-name">보관함 이름 <span className="optional">선택</span></label>
-          <Input id="source-name" maxLength={180} placeholder="예: 신제품 소개 녹화본" value={sourceName} disabled={!!busy || importPending}
-            onChange={event => setSourceName(event.target.value)} /></details>
+          {health && <p id="source-link-limits" className="source-link-limits">최대 {clock(Math.min(health.max_duration_seconds, 120)).replace(/ 0초$/, '')} · {Math.min(health.max_upload_mb, 50)} MB</p>}
+          <details className="studio-optional-field"><summary><span>{sourceName.trim() ? `보관함 이름: ${sourceName.trim()}` : '보관함 이름 지정'}</span><ChevronDown size={14} aria-hidden="true" /></summary>
+            <label className="sr-only" htmlFor="source-name">보관함 이름</label>
+            <Input id="source-name" maxLength={180} placeholder="비워두면 자동으로 이름을 정해요" value={sourceName} disabled={!!busy || importPending}
+              onChange={event => setSourceName(event.target.value)} />
+          </details>
           <Button type="submit" className="source-import-button" disabled={!canOperate || !!busy || !connected || !health || !sourcePlatform || !sourceUrl.trim() || importPending}>
             {busy === 'import' ? <LoaderCircle size={16} className="source-spinner" aria-hidden="true" /> : <Download size={16} aria-hidden="true" />}
             {busy === 'import' ? localPhase === 'requesting' ? '가져오기 요청 중…' : localPhase === 'uploading' ? '내 컴퓨터에서 보관함에 업로드 중…' : localPhase === 'validating' ? '업로드 완료 확인 중…' : '내 컴퓨터에서 가져오는 중…' : importPending ? '영상 검사 중…' : '영상 가져오기'}
