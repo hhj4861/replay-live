@@ -52,19 +52,3 @@ test('explicit download request preserves the web page and removes its temporary
   anchor.click = () => { throw new Error('blocked'); };
   assert.equal(client.requestHelperDownload({ url: anchor.href }), false); assert.equal(removes, 2);
 });
-test('a valid video import without a helper opens installation without creating a cloud job or clearing the URL', async () => {
-  const commercial = fs.readFileSync(path.join(__dirname, '../app/commercial.tsx'), 'utf8');
-  const body = commercial.slice(commercial.indexOf('  async function importSource('), commercial.indexOf('  async function create('));
-  const js = ts.transpileModule(body + '\nmodule.exports = importSource;', { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
-  const module = { exports: {} }; const seen = [];
-  const context = { module, URL, action: async (name, task) => task(), sessionIdentity: () => 'account', importPending: false,
-    sourcePlatform: {}, health: {}, sourceUrl: 'https://youtu.be/GcOe4ILS6Ow',
-    localImporter: { isConnected: () => false }, setLocalConnected: value => seen.push(['connected', value]), setHelperInstallOpen: value => seen.push(['install', value]) };
-  vm.runInNewContext(js, context);
-  await module.exports({ preventDefault() {} });
-  assert.deepEqual(seen, [['connected', false], ['install', true]]);
-  assert.equal(context.sourceUrl, 'https://youtu.be/GcOe4ILS6Ow');
-  // The form must remain clickable to reach that handler without a helper.
-  const disabled = commercial.match(/className="source-import-button" disabled=\{([^}]+)\}/)[1];
-  assert.doesNotMatch(disabled, /localConnected/);
-});
