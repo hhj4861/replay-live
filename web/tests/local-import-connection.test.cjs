@@ -74,7 +74,7 @@ test('unavailable helper explains installation and manual retry succeeds', async
   assert.match(text(nodes(tree).find(node => node.props?.role === 'alert')), /설치 여부와 실행 상태/);
   assert.ok(nodes(tree).find(node => node.props?.href === 'replay-live-helper://start'));
   assert.match(text(tree), /설치 파일은 아직 배포 준비 중/);
-  env.button('다시 확인').props.onClick(); await flush();
+  env.button('도우미 연결').props.onClick(); await flush();
   env.requests[1].resolve('ABCDEF123456'); await flush();
   assert.deepEqual(env.connections, ['ABCDEF123456']);
   env.dispose();
@@ -87,7 +87,7 @@ test('explicit disconnect prevents silent reconnect on focus and permits deliber
   env.render({ connected: false });
   assert.equal(env.listeners.has('focus'), false);
   assert.equal(env.requests.length, 1);
-  env.button('다시 확인').props.onClick(); await flush(); env.render();
+  env.button('도우미 연결').props.onClick(); await flush(); env.render();
   assert.equal(env.requests.length, 2); // no duplicate effect request
   env.requests[1].resolve('ABCDEF123456'); await flush();
   env.dispose();

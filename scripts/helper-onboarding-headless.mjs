@@ -79,7 +79,7 @@ async function scenario({ name, os = 'macOS', arch = 'arm', label, published = t
     await page.getByText('검증용 도우미 미실행 상태', { exact: false }).first().waitFor();
     assert.equal(await page.locator('dialog[open]').count(), 0);
     assert.equal(downloads.length, 0); assert.equal(assetRequests.length, 0);
-    const trigger = page.getByRole('button', { name: '영상 가져오기 (설치 안내 검증)', exact: true });
+    const trigger = page.getByRole('button', { name: '도우미 연결', exact: true });
     await trigger.click();
     const dialog = page.getByRole('dialog', { name: '영상 가져오기에 도우미가 필요합니다' });
     await dialog.waitFor();
@@ -124,6 +124,106 @@ async function scenario({ name, os = 'macOS', arch = 'arm', label, published = t
     assert.deepEqual(errors, []);
   } finally { await context.close(); }
 }
+
+// Render the real authenticated studio. Only session/API/helper data are fixtures.
+async function studioScenario() {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const errors = []; const unexpected = []; const writes = [];
+  let online = false; let rejectPair = false; let viewer = false;
+  const job = { id: 'fixture-job', title: '진행 중인 검증 방송', media_id: 'fixture-media', media_name: 'fixture.mp4',
+    target: 'youtube', state: 'streaming', progress: 1, duration: 60, scheduled: 1700000000 };
+  const seedSession = () => sessionStorage.setItem('replay-google-session', JSON.stringify({
+    token: 'headless_fixture_token_'.padEnd(43, 'x'), expires_at: Date.now() / 1000 + 3500,
+    absolute_expires_at: Date.now() / 1000 + 85000,
+  }));
+  try {
+    await context.addInitScript(seedSession);
+    await context.route('**/*', async route => {
+      const request = route.request(); const url = new URL(request.url());
+      if (url.origin === 'http://127.0.0.1:17833') {
+        const headers = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Headers': 'Content-Type, X-Replay-Local, Authorization', 'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS' };
+        if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
+        if (!online) return route.fulfill({ status: 503, headers, json: { detail: '검증용 도우미 미실행 상태' } });
+        if (url.pathname === '/pairing-code') return route.fulfill({ headers, json: { version: 1, code: 'ABCDEF123456', features: ['tab-reconnect'] } });
+        if (url.pathname === '/pair') return rejectPair
+          ? route.fulfill({ status: 403, headers, json: { detail: '검증용 연결 거부' } })
+          : route.fulfill({ headers, json: { version: 1, token: 'x'.repeat(43), features: ['cloud-direct-upload'] } });
+        return route.fulfill({ status: 204, headers });
+      }
+      if (url.origin === origin && url.pathname === '/helper-release.json') return route.fulfill({ json: { version: null, downloads: [] } });
+      if (url.origin === origin && url.pathname.startsWith('/api/')) {
+        if (request.method() !== 'GET') writes.push(url.pathname);
+        const fixtures = {
+          '/api/media': [], '/api/broadcasts': [job],
+          '/api/health': { ready: true, max_upload_mb: 50, max_duration_seconds: 120, retention_days: 7, max_concurrent: 1 },
+          '/api/usage': { storage_bytes: 0, storage_limit_bytes: 100000000, storage_reserved_bytes: 0, storage_available_bytes: 100000000 },
+          '/api/me': { tenant_id: 'fixture-tenant', subject: 'fixture-user', roles: [viewer ? 'viewer' : 'operator'] },
+          '/api/stream-targets': { max_destinations: 1, targets: [{ id: 'youtube', label: 'YouTube Live', default_server_url: 'rtmp://a.rtmp.youtube.com/live2', requires_server_url: false, requires_stream_key: true, note: '', setup_url: null }] },
+          '/api/media-sources': { sources: [{ id: 'youtube', label: 'YouTube', note: '' }] },
+        };
+        if (url.pathname in fixtures) return route.fulfill({ json: fixtures[url.pathname] });
+        if (url.pathname.includes('revoke') || url.pathname.includes('logout')) return route.fulfill({ json: {} });
+        unexpected.push(url.pathname); return route.fulfill({ status: 404, json: { detail: 'Unexpected fixture request' } });
+      }
+      if (url.origin === origin) return route.continue();
+      unexpected.push(url.origin); return route.abort('blockedbyclient');
+    });
+    const page = await context.newPage(); page.setDefaultTimeout(10_000);
+    page.on('pageerror', error => errors.push(error.message));
+    const gated = async () => {
+      assert.equal(await page.locator('#source-provider, #source-url, #commercial-title, #broadcast-form, .studio-launch-dock').count(), 0);
+      assert.equal(await page.getByRole('button', { name: '영상 가져오기', exact: true }).count(), 0);
+    };
+    const opened = async () => {
+      await page.getByLabel('원본 영상 플랫폼', { exact: true }).waitFor();
+      await page.getByLabel('녹화 영상 링크', { exact: true }).waitFor();
+      await page.getByLabel('방송 이름', { exact: true }).waitFor();
+      assert.equal(await page.locator('.studio-launch-dock').isVisible(), true);
+    };
+    await page.goto(origin + '/studio.html');
+    await page.getByText('도우미 데몬 사용', { exact: true }).waitFor();
+    await page.locator('.local-import-code-error').waitFor();
+    await gated(); assert.equal(await page.locator('.studio-history').count(), 0);
+    assert.equal(await page.locator('dialog[open]').count(), 0);
+    assert.deepEqual(writes, []);
+    // Discovery alone is insufficient: pairing must actually succeed.
+    online = true; rejectPair = true;
+    await page.getByRole('button', { name: '도우미 연결', exact: true }).click();
+    const dialog = page.getByRole('dialog'); await dialog.waitFor(); await gated();
+    await dialog.getByRole('button', { name: '취소', exact: true }).click();
+    rejectPair = false;
+    await page.getByRole('button', { name: '도우미 연결', exact: true }).click();
+    await opened(); assert.equal(await page.locator('dialog[open]').count(), 0);
+    await page.getByLabel('녹화 영상 링크', { exact: true }).fill('https://youtu.be/GcOe4ILS6Ow');
+    await page.getByLabel('방송 이름', { exact: true }).fill('입력 유지 검증');
+    await page.getByRole('button', { name: '연결 해제', exact: true }).click();
+    await page.getByRole('button', { name: '도우미 연결', exact: true }).waitFor();
+    await gated(); assert.equal(await page.locator('.studio-history').count(), 0);
+    // Existing cloud jobs remain manageable without the helper.
+    await page.getByRole('link', { name: /방송 이력/ }).click();
+    await page.getByRole('button', { name: '중지', exact: true }).waitFor(); await gated();
+    await page.getByRole('link', { name: 'Replay Live', exact: true }).click();
+    assert.equal(await page.locator('.studio-history').count(), 0);
+    await page.getByRole('button', { name: '도우미 연결', exact: true }).click();
+    await opened();
+    assert.equal(await page.getByLabel('녹화 영상 링크', { exact: true }).inputValue(), 'https://youtu.be/GcOe4ILS6Ow');
+    assert.equal(await page.getByLabel('방송 이름', { exact: true }).inputValue(), '입력 유지 검증');
+    online = false; await page.reload();
+    await page.locator('.local-import-code-error').waitFor(); await gated();
+    online = true; await page.reload(); await opened();
+    await page.getByRole('button', { name: '로그아웃', exact: true }).click();
+    await page.getByRole('heading', { name: '방송 준비를 시작하세요', exact: true }).waitFor(); await gated();
+    await page.reload(); await opened(); // Fresh synthetic login session, auto-pairs again.
+    viewer = true; await page.reload();
+    await page.locator('.studio-history').waitFor(); await gated();
+    assert.equal(await page.getByText('도우미 데몬 사용', { exact: true }).count(), 0);
+    assert.equal(await page.getByRole('button', { name: '중지', exact: true }).count(), 0);
+    assert.deepEqual(errors, []); assert.deepEqual(unexpected, []);
+    assert.equal(writes.some(url => /imports|uploads|broadcasts/.test(url)), false);
+    checks.push('real studio: helper-only first, pairing rejection stays gated, success reveals forms, disconnect hides forms, reconnect preserves inputs, reload/login rechecks, history and viewer access retained');
+  } finally { await context.close(); }
+}
+
 try {
   for (let n = 0; !serverLog.includes('Helper browser verification:'); n++) {
     if (server.exitCode !== null || n > 100) throw new Error(`Preview failed: ${serverLog.slice(-800)}`);
@@ -141,6 +241,7 @@ try {
   await scenario({ name: 'unpublished', published: false });
   await scenario({ name: 'mobile', mobile: true });
   await scenario({ name: 'existing-helper', online: true });
+  await studioScenario();
   console.log(JSON.stringify({ passed: true, headless: true, fixtureOnly: true, browser: browser.version(), checks }, null, 2));
 } finally {
   await browser?.close();
