@@ -44,7 +44,7 @@ export async function detectHelperPlatform(nav: DeviceNavigator = navigator): Pr
     return { os: 'unsupported', label: null, message: '현재 도우미는 Windows x64용입니다. 이 PC에서는 MP4 파일 업로드를 이용해 주세요.' };
   }
   // macOS User-Agent often says Intel even on Apple Silicon. Never guess.
-  return { os, label: null, message: '브라우저가 CPU 정보를 제공하지 않아 자동 선택하지 못했습니다. PC 종류를 한 번 선택해 주세요.' };
+  return { os, label: null, message: '브라우저가 CPU 정보를 제공하지 않아 설치 파일을 자동 선택할 수 없습니다. PC의 Chrome 또는 Edge에서 다시 시도하거나 MP4 파일을 업로드해 주세요.' };
 }
 
 export function platformDownloads(release: HelperRelease | null, platform: HelperPlatform | null) {

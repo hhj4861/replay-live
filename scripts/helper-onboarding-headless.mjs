@@ -29,6 +29,7 @@ const assets = [
 ].map(([label, suffix]) => ({ label, sha256: 'a'.repeat(64),
   url: `https://github.com/hhj4861/replay-live/releases/download/helper-v0.2.0/ReplayLiveHelper-0.2.0-${suffix}.zip` }));
 async function scenario({ name, os = 'macOS', arch = 'arm', label, published = true, online = false, unknown = false, mobile = false }) {
+  console.log('Checking ' + name);
   const context = await browser.newContext({ acceptDownloads: true, viewport: { width: 1280, height: 900 } });
   try {
     const errors = []; const downloads = []; const assetRequests = [];
@@ -67,41 +68,34 @@ async function scenario({ name, os = 'macOS', arch = 'arm', label, published = t
     page.setDefaultTimeout(10_000);
     await page.goto(origin);
     await page.getByRole('button', { name: '검증용 로그인', exact: true }).click();
-    if (online) {
-      await page.locator('.local-import-badge').filter({ hasText: '연결됨' }).waitFor();
-      assert.equal(await page.locator('dialog[open]').count(), 0);
-      await page.getByRole('button', { name: '검증용 로그아웃', exact: true }).click();
-      await page.getByRole('button', { name: '검증용 로그인', exact: true }).click();
-      await page.locator('.local-import-badge').filter({ hasText: '연결됨' }).waitFor();
-      assert.equal(downloads.length, 0); assert.equal(assetRequests.length, 0);
-      assert.deepEqual(errors, []); checks.push(`${name}: reconnect without installation/download`); return;
-    }
-    await page.getByText('검증용 도우미 미실행 상태', { exact: false }).first().waitFor();
     assert.equal(await page.locator('dialog[open]').count(), 0);
     assert.equal(downloads.length, 0); assert.equal(assetRequests.length, 0);
-    const trigger = page.getByRole('button', { name: '도우미 연결', exact: true });
+    if (online) {
+      await page.getByRole('button', { name: '영상 가져오기', exact: true }).click();
+      await page.getByText('연결됨', { exact: true }).waitFor();
+      assert.equal(await page.locator('dialog[open]').count(), 0);
+      assert.equal(downloads.length, 0); assert.deepEqual(errors, []);
+      checks.push(`${name}: on-demand connection without download`); return;
+    }
+    const trigger = page.getByRole('button', { name: '영상 가져오기', exact: true });
     await trigger.click();
-    const dialog = page.getByRole('dialog', { name: '영상 가져오기에 도우미가 필요합니다' });
+    const dialog = page.getByRole('dialog', { name: '링크 다운로드에 도우미가 필요해요' });
     await dialog.waitFor();
     await page.keyboard.press('Escape');
     await dialog.waitFor({ state: 'hidden' });
-    assert.equal(await trigger.evaluate(element => element === document.activeElement), true);
+    await page.waitForFunction(() => document.activeElement?.textContent === '영상 가져오기');
     assert.equal(downloads.length, 0); assert.equal(assetRequests.length, 0);
     await trigger.click();
     await dialog.waitFor();
-    const confirm = dialog.getByRole('button', { name: '확인 · 설치 파일 다운로드', exact: true });
-    if (!published || mobile) {
+    const confirm = dialog.getByRole('button', { name: '동의하고 설치 파일 다운로드', exact: true });
+    if (!published || mobile || unknown) {
       assert.equal(await confirm.isDisabled(), true);
       await dialog.getByRole('button', { name: '취소', exact: true }).click();
       await dialog.waitFor({ state: 'hidden' });
       assert.equal(downloads.length, 0); assert.equal(assetRequests.length, 0);
       checks.push(`${name}: no unavailable/unsupported installer offered`);
     } else {
-      if (unknown) {
-        assert.equal(await confirm.isDisabled(), true);
-        await dialog.getByLabel('도우미를 설치할 PC 종류').selectOption(label);
-      }
-      await dialog.getByText('선택한 설치 파일:', { exact: false }).filter({ hasText: label }).waitFor();
+      await dialog.getByText('설치 파일:', { exact: false }).filter({ hasText: label }).waitFor();
       assert.equal(await confirm.isEnabled(), true);
       const downloadReady = new Promise(resolve => { receiveDownload = resolve; });
       await confirm.click();
@@ -117,7 +111,7 @@ async function scenario({ name, os = 'macOS', arch = 'arm', label, published = t
       assert.equal(page.url(), origin + '/');
       await dialog.getByText('다운로드를 요청했습니다.', { exact: false }).waitFor();
       online = true; // Simulate helper becoming available after installation.
-      await page.locator('.local-import-badge').filter({ hasText: '연결됨' }).waitFor();
+      await page.getByText('연결됨', { exact: true }).waitFor();
       await dialog.waitFor({ state: 'hidden' });
       checks.push(`${name}: confirmation downloads correct fixture, then connects and closes`);
     }
@@ -127,10 +121,15 @@ async function scenario({ name, os = 'macOS', arch = 'arm', label, published = t
 
 // Render the real authenticated studio. Only session/API/helper data are fixtures.
 async function studioScenario() {
+  console.log('Checking real studio');
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
-  const errors = []; const unexpected = []; const writes = [];
-  let online = false; let rejectPair = false; let viewer = false;
-  const job = { id: 'fixture-job', title: '진행 중인 검증 방송', media_id: 'fixture-media', media_name: 'fixture.mp4',
+  const errors = []; const unexpected = []; const writes = []; const localRequests = [];
+  let online = false; let rejectPair = false; let viewer = false; let delayPair = null; let published = false;
+  let imported = false;
+  const id = 'a'.repeat(32);
+  const media = { id: 'fixture-media', name: '기존 보관 영상.mp4', status: 'ready', duration: 30, bytes: 1000 };
+  const importedMedia = { ...media, id, name: '자동 가져온 영상.mp4' };
+  const job = { id: 'fixture-job', title: '진행 중인 검증 방송', media_id: media.id, media_name: media.name,
     target: 'youtube', state: 'streaming', progress: 1, duration: 60, scheduled: 1700000000 };
   const seedSession = () => sessionStorage.setItem('replay-google-session', JSON.stringify({
     token: 'headless_fixture_token_'.padEnd(43, 'x'), expires_at: Date.now() / 1000 + 3500,
@@ -138,89 +137,139 @@ async function studioScenario() {
   }));
   try {
     await context.addInitScript(seedSession);
+    await context.addInitScript(() => Object.defineProperty(navigator, 'userAgentData', { configurable: true, value: { platform: 'macOS', getHighEntropyValues: async () => ({ architecture: 'arm', bitness: '64' }) } }));
     await context.route('**/*', async route => {
       const request = route.request(); const url = new URL(request.url());
       if (url.origin === 'http://127.0.0.1:17833') {
         const headers = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Headers': 'Content-Type, X-Replay-Local, Authorization', 'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS' };
         if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
+        localRequests.push(url.pathname);
         if (!online) return route.fulfill({ status: 503, headers, json: { detail: '검증용 도우미 미실행 상태' } });
         if (url.pathname === '/pairing-code') return route.fulfill({ headers, json: { version: 1, code: 'ABCDEF123456', features: ['tab-reconnect'] } });
-        if (url.pathname === '/pair') return rejectPair
-          ? route.fulfill({ status: 403, headers, json: { detail: '검증용 연결 거부' } })
-          : route.fulfill({ headers, json: { version: 1, token: 'x'.repeat(43), features: ['cloud-direct-upload'] } });
+        if (url.pathname === '/pair') {
+          if (delayPair) await delayPair;
+          return rejectPair ? route.fulfill({ status: 403, headers, json: { detail: '검증용 연결 거부' } })
+            : route.fulfill({ headers, json: { version: 1, token: 'x'.repeat(43), features: ['cloud-direct-upload'] } });
+        }
+        if (url.pathname === '/cloud-imports') {
+          imported = true;
+          return route.fulfill({ headers, json: { id, state: 'ready', media_id: id } });
+        }
         return route.fulfill({ status: 204, headers });
       }
-      if (url.origin === origin && url.pathname === '/helper-release.json') return route.fulfill({ json: { version: null, downloads: [] } });
+      if (url.origin === origin && url.pathname === '/helper-release.json') return route.fulfill({ json: published ? { version: '0.2.0', downloads: assets } : { version: null, downloads: [] } });
+      if (assets.some(item => item.url === url.href)) return route.fulfill({ contentType: 'application/octet-stream', headers: { 'Content-Disposition': 'attachment; filename=helper-fixture.zip' }, body: fixtureBytes });
       if (url.origin === origin && url.pathname.startsWith('/api/')) {
-        if (request.method() !== 'GET') writes.push(url.pathname);
+        if (request.method() !== 'GET') writes.push({ path: url.pathname, body: request.postDataJSON() });
         const fixtures = {
-          '/api/media': [], '/api/broadcasts': [job],
+          '/api/media': imported ? [importedMedia, media] : [media], '/api/broadcasts': [job],
           '/api/health': { ready: true, max_upload_mb: 50, max_duration_seconds: 120, retention_days: 7, max_concurrent: 1 },
-          '/api/usage': { storage_bytes: 0, storage_limit_bytes: 100000000, storage_reserved_bytes: 0, storage_available_bytes: 100000000 },
+          '/api/usage': { storage_bytes: 1000, storage_limit_bytes: 100000000, storage_reserved_bytes: 0, storage_available_bytes: 99999000 },
           '/api/me': { tenant_id: 'fixture-tenant', subject: 'fixture-user', roles: [viewer ? 'viewer' : 'operator'] },
           '/api/stream-targets': { max_destinations: 1, targets: [{ id: 'youtube', label: 'YouTube Live', default_server_url: 'rtmp://a.rtmp.youtube.com/live2', requires_server_url: false, requires_stream_key: true, note: '', setup_url: null }] },
           '/api/media-sources': { sources: [{ id: 'youtube', label: 'YouTube', note: '' }] },
+          '/api/device-imports': { id, token: 'task-only-fixture' },
+          [`/api/device-imports/${id}`]: { state: 'completed', media: importedMedia },
         };
+        if (/\/media\/[^/]+\/preview$/.test(url.pathname)) return route.fulfill({ json: { url: origin + '/fixture-preview.mp4' } });
         if (url.pathname in fixtures) return route.fulfill({ json: fixtures[url.pathname] });
         if (url.pathname.includes('revoke') || url.pathname.includes('logout')) return route.fulfill({ json: {} });
         unexpected.push(url.pathname); return route.fulfill({ status: 404, json: { detail: 'Unexpected fixture request' } });
       }
+      if (url.origin === origin && url.pathname === '/fixture-preview.mp4') return route.fulfill({ status: 204 });
       if (url.origin === origin) return route.continue();
       unexpected.push(url.origin); return route.abort('blockedbyclient');
     });
     const page = await context.newPage(); page.setDefaultTimeout(10_000);
     page.on('pageerror', error => errors.push(error.message));
-    const gated = async () => {
-      assert.equal(await page.locator('#source-provider, #source-url, #commercial-title, #broadcast-form, .studio-launch-dock').count(), 0);
-      assert.equal(await page.getByRole('button', { name: '영상 가져오기', exact: true }).count(), 0);
-    };
     const opened = async () => {
       await page.getByLabel('원본 영상 플랫폼', { exact: true }).waitFor();
       await page.getByLabel('녹화 영상 링크', { exact: true }).waitFor();
       await page.getByLabel('방송 이름', { exact: true }).waitFor();
       assert.equal(await page.locator('.studio-launch-dock').isVisible(), true);
+      await page.getByRole('button', { name: '중지', exact: true }).waitFor();
+      assert.equal(await page.getByText('도우미 데몬 사용', { exact: true }).count(), 0);
     };
-    await page.goto(origin + '/studio.html');
-    await page.getByText('도우미 데몬 사용', { exact: true }).waitFor();
-    await page.locator('.local-import-code-error').waitFor();
-    await gated(); assert.equal(await page.locator('.studio-history').count(), 0);
-    assert.equal(await page.locator('dialog[open]').count(), 0);
-    assert.deepEqual(writes, []);
-    // Discovery alone is insufficient: pairing must actually succeed.
-    online = true; rejectPair = true;
-    await page.getByRole('button', { name: '도우미 연결', exact: true }).click();
-    const dialog = page.getByRole('dialog'); await dialog.waitFor(); await gated();
-    await dialog.getByRole('button', { name: '취소', exact: true }).click();
-    rejectPair = false;
-    await page.getByRole('button', { name: '도우미 연결', exact: true }).click();
-    await opened(); assert.equal(await page.locator('dialog[open]').count(), 0);
-    await page.getByLabel('녹화 영상 링크', { exact: true }).fill('https://youtu.be/GcOe4ILS6Ow');
+    const trigger = page.getByRole('button', { name: '영상 가져오기', exact: true });
+    const dialog = page.getByRole('dialog');
+    const tickets = () => writes.filter(item => item.path === '/api/device-imports');
+    await page.goto(origin + '/studio.html'); await opened();
+    assert.equal(localRequests.length, 0); assert.deepEqual(writes, []);
+    // Library/file/broadcast inputs work without any helper interaction.
+    await page.getByRole('button', { name: '파일 업로드', exact: true }).click();
+    await page.locator('input[type=file]').waitFor({ state: 'attached' });
+    await page.getByRole('button', { name: '보관함', exact: true }).click();
+    await page.getByRole('button', { name: '기존 보관 영상.mp4 선택', exact: true }).click();
+    await page.getByRole('button', { name: 'YouTube Live', exact: false }).click();
     await page.getByLabel('방송 이름', { exact: true }).fill('입력 유지 검증');
-    await page.getByRole('button', { name: '연결 해제', exact: true }).click();
-    await page.getByRole('button', { name: '도우미 연결', exact: true }).waitFor();
-    await gated(); assert.equal(await page.locator('.studio-history').count(), 0);
-    // Existing cloud jobs remain manageable without the helper.
-    await page.getByRole('link', { name: /방송 이력/ }).click();
-    await page.getByRole('button', { name: '중지', exact: true }).waitFor(); await gated();
-    await page.getByRole('link', { name: 'Replay Live', exact: true }).click();
-    assert.equal(await page.locator('.studio-history').count(), 0);
-    await page.getByRole('button', { name: '도우미 연결', exact: true }).click();
-    await opened();
+    await page.locator('input[type=password]').first().fill('fixture-stream-key');
+    await page.getByLabel('선택한 채널의 라이브 준비를 마쳤어요.', { exact: true }).check();
+    assert.equal(await page.getByRole('button', { name: '송출 시작', exact: true }).isEnabled(), true);
+    assert.equal(localRequests.length, 0);
+    await page.getByRole('button', { name: '영상 링크', exact: true }).click();
+    await page.getByLabel('녹화 영상 링크', { exact: true }).fill('https://youtu.be/GcOe4ILS6Ow');
+    await trigger.click(); await dialog.waitFor();
+    await dialog.getByRole('alert').waitFor();
+    assert.equal(await dialog.locator('input,select').count(), 0);
+    assert.equal(await dialog.getByRole('button', { name: '동의하고 설치 파일 다운로드', exact: true }).isDisabled(), true);
+    assert.equal(tickets().length, 0);
+    await page.keyboard.press('Escape'); await dialog.waitFor({ state: 'hidden' });
+    await trigger.waitFor();
     assert.equal(await page.getByLabel('녹화 영상 링크', { exact: true }).inputValue(), 'https://youtu.be/GcOe4ILS6Ow');
+    // Late successful pair after Cancel must not resume the request.
+    online = true; let releasePair;
+    delayPair = new Promise(resolve => { releasePair = resolve; });
+    const pairing = page.waitForRequest(request => request.url().endsWith(':17833/pair'));
+    await trigger.click(); await pairing;
+    await dialog.getByRole('button', { name: '취소', exact: true }).click();
+    const revoked = page.waitForRequest(request => request.url().endsWith(':17833/session') && request.method() === 'DELETE');
+    releasePair(); delayPair = null; await revoked;
+    assert.equal(tickets().length, 0);
+    // A rejected pair shows its error; retry automatically resumes exactly once.
+    rejectPair = true; await trigger.click();
+    await dialog.getByText('검증용 연결 거부', { exact: false }).waitFor();
+    assert.equal(tickets().length, 0);
+    rejectPair = false; await dialog.getByRole('button', { name: '다시 연결', exact: true }).click();
+    await page.locator('.studio-selected-media').getByText('자동 가져온 영상.mp4', { exact: true }).waitFor();
+    assert.equal(tickets().length, 1);
+    assert.equal(tickets()[0].body.url, 'https://youtu.be/GcOe4ILS6Ow');
+    assert.equal(await page.locator('dialog[open]').count(), 0);
     assert.equal(await page.getByLabel('방송 이름', { exact: true }).inputValue(), '입력 유지 검증');
-    online = false; await page.reload();
-    await page.locator('.local-import-code-error').waitFor(); await gated();
+    // Reload never downloads again or re-pairs without a new explicit link action.
+    await page.reload(); await opened(); const count = localRequests.length;
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    assert.equal(localRequests.length, count); assert.equal(tickets().length, 1);
+    await page.getByLabel('녹화 영상 링크', { exact: true }).fill('https://youtu.be/GcOe4ILS6Ow');
+    online = false; await trigger.click(); await dialog.waitFor();
+    await dialog.getByRole('button', { name: 'MP4 파일 업로드', exact: true }).click();
+    await page.locator('input[type=file]').waitFor({ state: 'attached' });
+    assert.equal(tickets().length, 1);
+    // Consent -> fixture download -> helper appears -> original link resumes,
+    // without a PC/code field or a second import click.
+    published = true;
+    await page.getByRole('button', { name: '영상 링크', exact: true }).click();
+    await trigger.click(); await dialog.waitFor();
+    await dialog.getByText('설치 파일:', { exact: false }).waitFor();
+    const downloaded = context.waitForEvent('request', request => assets.some(item => item.url === request.url()));
+    await dialog.getByRole('button', { name: '동의하고 설치 파일 다운로드', exact: true }).click();
+    await downloaded; online = true;
+    await dialog.waitFor({ state: 'hidden' });
+    await page.getByText('영상이 준비됐습니다. 방송할 채널을 선택해 주세요.', { exact: true }).waitFor();
+    assert.equal(tickets().length, 2);
+    assert.equal(tickets()[1].body.url, 'https://youtu.be/GcOe4ILS6Ow');
+    await page.reload(); await opened(); online = false;
+    await page.getByLabel('녹화 영상 링크', { exact: true }).fill('https://youtu.be/GcOe4ILS6Ow');
+    // Session invalidation while installation is pending removes the intent.
+    await page.getByRole('button', { name: '영상 링크', exact: true }).click();
+    await trigger.click(); await dialog.waitFor();
+    await page.evaluate(() => window.dispatchEvent(new Event('replay-signin-required')));
+    await page.getByRole('heading', { name: '방송 준비를 시작하세요', exact: true }).waitFor();
     online = true; await page.reload(); await opened();
-    await page.getByRole('button', { name: '로그아웃', exact: true }).click();
-    await page.getByRole('heading', { name: '방송 준비를 시작하세요', exact: true }).waitFor(); await gated();
-    await page.reload(); await opened(); // Fresh synthetic login session, auto-pairs again.
-    viewer = true; await page.reload();
-    await page.locator('.studio-history').waitFor(); await gated();
-    assert.equal(await page.getByText('도우미 데몬 사용', { exact: true }).count(), 0);
-    assert.equal(await page.getByRole('button', { name: '중지', exact: true }).count(), 0);
+    assert.equal(tickets().length, 2); assert.equal(await page.locator('dialog[open]').count(), 0);
+    viewer = true; await page.reload(); await page.locator('.studio-history').waitFor();
+    assert.equal(await page.locator('#broadcast-form').count(), 0);
     assert.deepEqual(errors, []); assert.deepEqual(unexpected, []);
-    assert.equal(writes.some(url => /imports|uploads|broadcasts/.test(url)), false);
-    checks.push('real studio: helper-only first, pairing rejection stays gated, success reveals forms, disconnect hides forms, reconnect preserves inputs, reload/login rechecks, history and viewer access retained');
+    checks.push('real studio: full forms on login; file/library/broadcast work without helper; link-only modal; no manual inputs; cancel and late pairing cannot import; retry and install consent each resume their original link exactly once; reload/session changes never replay; viewer history retained');
   } finally { await context.close(); }
 }
 

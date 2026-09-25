@@ -103,7 +103,6 @@ export default function CommercialHome() {
   const [confirmed, setConfirmed] = useState(false);
   const [schedule, setSchedule] = useState('');
   const [startMode, setStartMode] = useState<'now' | 'scheduled'>('now');
-  const [historyView, setHistoryView] = useState(false);
   const [historyFilter, setHistoryFilter] = useState<'all' | 'active' | 'finished'>('all');
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
@@ -115,8 +114,8 @@ export default function CommercialHome() {
   const pendingUpload = useRef<{ id: string; digest: string } | null>(null);
   const [mediaSelection] = useState(() => createMediaSelection());
   const [localImporter] = useState(() => createLocalImporter());
-  const [localConnected, setLocalConnected] = useState(false);
   const [helperInstallOpen, setHelperInstallOpen] = useState(false);
+  const helperRequest = useRef<{ identity: string; resolve: (connected: boolean) => void } | null>(null);
   const [localPhase, setLocalPhase] = useState<LocalImportPhase | ''>('');
   const localImportAbort = useRef<AbortController | null>(null);
   const uploading = useRef<XMLHttpRequest | null>(null);
@@ -138,7 +137,6 @@ export default function CommercialHome() {
   }, [connectionAutofill]);
   const connectionLoads = useSyncExternalStore(connectionAutofill.subscribe, connectionAutofill.getSnapshot, connectionAutofill.getSnapshot);
   const canOperate = roles.includes('admin') || roles.includes('operator');
-  const studioReady = canOperate && localConnected;
   const hasLocal = targets.includes('local');
   const hasLive = targets.some(target => target !== 'local');
   const maxDestinations = catalog?.max_destinations || health?.max_concurrent || 1;
@@ -154,15 +152,16 @@ export default function CommercialHome() {
     setAuthenticated(false); setConnected(false); setMedia([]); setJobs([]); setDestinations({}); setPreview(null); setRoles([]);
     setMediaId(''); setUsage(undefined); setHealth(undefined); setCatalog(undefined); setOutputEstimate(undefined);
     setEvents([]); setConfirmed(false); setBusy(''); setError(''); setImportFailure(null); setNotice(''); setUploadProgress(0);
-    setTitle(''); setTargets([]); setSchedule(''); setStartMode('now'); setHistoryFilter('all'); setHistoryView(false);
+    setTitle(''); setTargets([]); setSchedule(''); setStartMode('now'); setHistoryFilter('all');
     localImportAbort.current?.abort(); localImportAbort.current = null;
-    void localImporter.disconnect(); setHelperInstallOpen(false); setLocalConnected(false); setLocalPhase('');
+    helperRequest.current?.resolve(false); helperRequest.current = null;
+    void localImporter.disconnect(); setHelperInstallOpen(false); setLocalPhase('');
     setSourceCatalog(undefined); setSourceMode('link'); setSourceProvider('youtube'); setSourceUrl(''); setSourceName(''); setImportId('');
     connectionStoreRef.current = undefined; connectionOwnerRef.current = undefined; connectionListVersion.current += 1;
     setConnectionOwner(undefined); setConnectionStore(undefined); setSavedConnections({}); setConnectionStorageError('');
     setAccount(undefined); setManagementView(''); managementTrigger.current = null;
   }, [connectionAutofill, mediaSelection, localImporter]);
-  useEffect(() => () => { localImportAbort.current?.abort(); void localImporter.disconnect(); }, [localImporter]);
+  useEffect(() => () => { helperRequest.current?.resolve(false); helperRequest.current = null; localImportAbort.current?.abort(); void localImporter.disconnect(); }, [localImporter]);
   useEffect(() => {
     window.addEventListener('replay-signin-required', resetAccount);
     return () => window.removeEventListener('replay-signin-required', resetAccount);
@@ -182,9 +181,10 @@ export default function CommercialHome() {
       connectionStoreRef.current = undefined; connectionListVersion.current += 1;
       connectionOwnerRef.current = nextOwner; setConnectionOwner(nextOwner);
       setConnectionStore(undefined); setSavedConnections({}); setConnectionStorageError('');
-      if (previousOwner) { setImportFailure(null); localImportAbort.current?.abort(); void localImporter.disconnect(); setHelperInstallOpen(false); setLocalConnected(false); connectionAutofill.reset(); mediaSelection.reset(); setImportId(''); setMediaId(''); setPreview(null); setDestinations({}); setConfirmed(false); setManagementView(''); setHistoryView(false); }
+      if (previousOwner) { setImportFailure(null); localImportAbort.current?.abort(); void localImporter.disconnect(); helperRequest.current?.resolve(false); helperRequest.current = null; setHelperInstallOpen(false); connectionAutofill.reset(); mediaSelection.reset(); setImportId(''); setMediaId(''); setPreview(null); setDestinations({}); setConfirmed(false); setManagementView(''); }
     }
     if (!me.roles.includes('admin') && !me.roles.includes('operator')) {
+      helperRequest.current?.resolve(false); helperRequest.current = null; setHelperInstallOpen(false);
       connectionStoreRef.current = undefined; setConnectionStore(undefined); setSavedConnections({});
       connectionAutofill.reset(); setDestinations({}); setConfirmed(false);
     }
@@ -422,23 +422,41 @@ export default function CommercialHome() {
     await action('upload', () => sendUpload(file, sessionIdentity(), 'upload'));
     if (picker.current) picker.current.value = '';
   }
+  function closeHelper() {
+    helperRequest.current?.resolve(false); helperRequest.current = null;
+    setHelperInstallOpen(false);
+  }
   const connectLocal = useCallback(async (code: string, signal: AbortSignal) => {
+    const request = helperRequest.current;
+    if (!request) return;
+    assertSessionIdentity(request.identity);
     await localImporter.pair(code, signal);
-    signal.throwIfAborted();
-    setLocalConnected(localImporter.isConnected());
+    signal.throwIfAborted(); assertSessionIdentity(request.identity);
+    if (helperRequest.current !== request) return;
+    helperRequest.current = null;
+    request.resolve(true);
     setHelperInstallOpen(false);
   }, [localImporter]);
   async function importSource(event?: React.SyntheticEvent<HTMLFormElement, SubmitEvent>) {
     event?.preventDefault();
+    if (busy || helperRequest.current || localImportAbort.current) return;
     await action('import', async () => {
       const identity = sessionIdentity();
       if (importPending || !sourcePlatform || !health) throw new Error('원본 플랫폼과 진행 중인 가져오기를 확인하세요.');
       let url: URL;
       try { url = new URL(sourceUrl.trim()); } catch { throw new Error('녹화 영상의 전체 HTTPS 링크를 입력하세요.'); }
       if (url.protocol !== 'https:' || (url.port && url.port !== '443') || url.username || url.password || url.hash || url.href.length > 4096) throw new Error('계정 정보나 # 조각 주소가 없는 HTTPS 영상 링크를 입력하세요.');
-      if (!localImporter.isConnected()) { setLocalConnected(false); setHelperInstallOpen(true); return; }
       const maxBytes = Math.min(health.max_upload_mb * 1024 ** 2, usage?.storage_available_bytes ?? Infinity, 50 * 1024 ** 2);
       if (maxBytes < 1) throw new Error('보관함의 저장 공간이 부족합니다.');
+      // Keep the original submit alive across installation; cancel/logout discard it.
+      // Inputs stay unchanged and no cloud job exists until pairing succeeds.
+      if (!localImporter.isConnected()) {
+        const paired = await new Promise<boolean>(resolve => {
+          helperRequest.current = { identity, resolve }; setHelperInstallOpen(true);
+        });
+        if (!paired) return;
+        assertSessionIdentity(identity);
+      }
       const controller = new AbortController(); localImportAbort.current = controller;
       const selection = mediaSelection.begin(identity);
       setMediaId(''); setPreview(null); setImportId(''); setConfirmed(false); setPreparationKind('import');
@@ -451,7 +469,7 @@ export default function CommercialHome() {
         setNotice('내 컴퓨터에서 보관함에 업로드했습니다. 검사가 끝나면 이 영상이 자동으로 선택됩니다.');
         void refresh().catch(() => setConnected(false));
       } finally {
-        if (identity === sessionIdentity()) { setLocalConnected(localImporter.isConnected()); setLocalPhase(''); }
+        if (identity === sessionIdentity()) { setLocalPhase(''); }
         if (localImportAbort.current === controller) localImportAbort.current = null;
       }
     });
@@ -499,7 +517,7 @@ export default function CommercialHome() {
   const loadingConnection = targets.find(id => connectionLoads[id]?.loading);
   const channelsReady = targets.length > 0 && selectedTargets.length === targets.length && !tooMany && !loadingConnection && !missingDestinations.length;
   const scheduleReady = startMode === 'now' || (!!schedule && Number.isFinite(new Date(schedule).getTime()));
-  const pendingReason = !canOperate ? '현재 계정은 조회만 할 수 있습니다.' : !localConnected ? '도우미를 먼저 연결해 주세요.' : !connected ? '서버에 다시 연결하고 있습니다.'
+  const pendingReason = !canOperate ? '현재 계정은 조회만 할 수 있습니다.' : !connected ? '서버에 다시 연결하고 있습니다.'
     : !health?.ready ? '송출 준비 상태를 확인하고 있습니다.' : importPending ? '영상 가져오기와 검사가 끝나면 시작할 수 있어요.'
     : !sourceReady ? '방송할 영상을 먼저 준비해 주세요.' : !targets.length ? '방송할 채널을 하나 이상 선택해 주세요.'
     : tooMany ? `채널은 최대 ${maxDestinations}개까지 선택할 수 있어요.` : loadingConnection ? '저장한 채널 연결을 불러오고 있어요.' : !channelsReady ? `${missingDestinations[0]?.label || '선택한 채널'}의 연결 정보를 입력해 주세요.`
@@ -530,7 +548,7 @@ export default function CommercialHome() {
     </section></div><footer className="studio-welcome-footer">Replay Live<span>영상은 준비하고, 방송은 편리하게.</span></footer>
   </main>;
   return <main className="studio replay-studio">
-    <header className="topbar studio-topbar member-topbar"><a href="#studio-top" className="brand" onClick={() => { setManagementView(''); setHistoryView(false); }}><span className="studio-brand-icon"><Radio size={22} /></span><strong>Replay Live</strong></a><nav aria-label="스튜디오 메뉴"><a href="#broadcast-history" onClick={() => { setManagementView(''); setHistoryView(true); }}><History size={16} />방송 이력{activeJobs.length > 0 && <span className="studio-nav-count">{activeJobs.length}</span>}</a>
+    <header className="topbar studio-topbar member-topbar"><a href="#studio-top" className="brand" onClick={() => { setManagementView(''); }}><span className="studio-brand-icon"><Radio size={22} /></span><strong>Replay Live</strong></a><nav aria-label="스튜디오 메뉴"><a href="#broadcast-history" onClick={() => { setManagementView(''); }}><History size={16} />방송 이력{activeJobs.length > 0 && <span className="studio-nav-count">{activeJobs.length}</span>}</a>
       <Button variant="ghost" className="member-nav-button" disabled={!account || !!busy} aria-pressed={managementView === 'account'} onClick={event => { managementTrigger.current = event.currentTarget; setManagementView('account'); }}><UserRound size={16} />내 계정</Button>
       {canManageMembers(account) && <Button variant="ghost" className="member-nav-button" disabled={!!busy} aria-pressed={managementView === 'members'} onClick={event => { managementTrigger.current = event.currentTarget; setManagementView('members'); }}><Users size={16} />회원 관리</Button>}
     </nav><div className="connection"><span className="studio-connection-status"><i className={connected && health?.ready ? 'online' : ''} />{connected ? health?.ready ? '스튜디오 연결됨' : '준비 상태 확인 중' : '재연결 중'}</span><Button variant="ghost" disabled={!!busy} onClick={() => {
@@ -542,8 +560,9 @@ export default function CommercialHome() {
         if (identity === sessionIdentity() && (!revoked || !signedOut)) setError('이 기기에서는 로그아웃했습니다. 서버나 로그인 제공자의 세션 종료는 확인하지 못했습니다.');
       });
     }}>로그아웃</Button></div></header>
-    {canOperate && <LocalImportConnection key={sessionIdentity()} installOpen={helperInstallOpen} onInstallClose={() => setHelperInstallOpen(false)} onLoadCode={localImporter.readPairingCode} connected={localConnected} disabled={!!busy}
-      onConnect={connectLocal} onDisconnect={() => { void localImporter.disconnect(); setHelperInstallOpen(false); setLocalConnected(false); }} />}
+    {canOperate && helperInstallOpen && <LocalImportConnection key={sessionIdentity()} onClose={closeHelper}
+      onLoadCode={localImporter.readPairingCode} onConnect={connectLocal}
+      onUpload={() => { closeHelper(); setSourceMode('file'); }} />}
     {managementView && account && connectionOwner ? <MemberManagement key={`${connectionOwner.identity}:${connectionOwner.tenant_id}:${connectionOwner.subject}:${managementView}`}
       mode={managementView} identity={connectionOwner.identity} account={account} targets={catalog?.targets || []}
       connections={Object.values(savedConnections)} location={connectionStore?.location ?? streamConnectionLocation()} connectionError={connectionStorageError}
@@ -554,8 +573,7 @@ export default function CommercialHome() {
       }} /> : <>
     {!connected && <output className="message error studio-message">서버에 다시 연결하고 있습니다.<Button variant="ghost" onClick={() => void action('reconnect', async () => { await refresh(); })}>다시 연결</Button><Button variant="ghost" onClick={() => void action('login', signIn)}>다시 로그인</Button></output>}
     {error && <p className="message error studio-message" role="alert">{error}</p>}{notice && <output className="message success studio-message"><Check size={17} />{notice}</output>}
-    {!localConnected && importFailure && <div className="message error studio-message" role="alert"><strong>{importFailure.title}</strong><p>{importFailure.message}</p><p>도우미를 다시 연결한 뒤 계속해 주세요.</p></div>}
-    {studioReady && <>
+    {canOperate && <>
     <div className="studio-intro" id="studio-top"><div><h1>새 방송 만들기</h1><p>영상 하나로, 여러 채널의 시청자를 만나세요.</p></div>{usage && <div className="studio-storage"><div><span>내 저장 공간</span><strong>{size(usage.storage_bytes)} <small>/ {size(usage.storage_limit_bytes)}</small></strong></div><meter min={0} max={usage.storage_limit_bytes} value={usage.storage_bytes} aria-label="저장 공간 사용량" /><span>{usage.storage_reserved_bytes > 0 ? `처리 중인 파일 ${size(usage.storage_reserved_bytes)} 포함` : '원본 영상과 방송 결과를 보관합니다.'}</span></div>}</div>
     <ol className="studio-steps" aria-label="방송 준비 순서"><li className={sourceReady ? 'done' : 'current'}><a href="#source-title"><span>{sourceReady ? <Check size={16} /> : '1'}</span><div><strong>영상 준비</strong><small>{sourceReady ? '영상이 준비됐어요' : '링크 또는 파일을 추가하세요'}</small></div></a></li><li className={channelsReady ? 'done' : sourceReady ? 'current' : ''}><a href="#channels-title"><span>{channelsReady ? <Check size={16} /> : '2'}</span><div><strong>채널 선택</strong><small>{targets.length ? `${targets.length}개 선택${channelsReady ? ' · 입력 완료' : ' · 연결 정보 입력'}` : maxDestinations === 1 ? '방송할 채널을 선택하세요' : '여러 채널을 함께 선택하세요'}</small></div></a></li><li className={!pendingReason ? 'current' : ''}><a href="#publish-title"><span>3</span><div><strong>방송 시작</strong><small>바로 시작하거나 예약하세요</small></div></a></li></ol>
     <div className="studio-workspace"><section className="studio-source-panel studio-panel" aria-labelledby="source-title"><div className="studio-panel-heading"><div><span className="studio-step-number">1</span><h2 id="source-title">방송할 영상</h2></div><span className={sourceReady ? 'studio-ready-tag' : 'studio-muted-tag'}>{sourceReady ? <><Check size={13} />준비됨</> : '영상 추가'}</span></div>
@@ -627,8 +645,6 @@ export default function CommercialHome() {
       </div></section>
     </form></div></div>
     </>}
-    {/* Existing broadcasts remain accessible through the menu before pairing. */}
-    {(studioReady || historyView || (account && !canOperate)) && <>
     <section className="studio-history" id="broadcast-history" aria-labelledby="history-title"><div className="studio-history-heading"><div><h2 id="history-title">방송 이력 <span>{jobs.length}</span></h2><p>전송 완료는 플랫폼의 공개·다시보기 저장 확인을 뜻하지 않습니다.</p></div><fieldset className="studio-history-filters"><legend className="sr-only">방송 이력 필터</legend>{([{ id: 'all', label: '전체' }, { id: 'active', label: '진행 중' }, { id: 'finished', label: '종료' }] as const).map(filter => <button type="button" key={filter.id} aria-pressed={historyFilter === filter.id} onClick={() => setHistoryFilter(filter.id)}>{filter.label}</button>)}</fieldset></div>
       {visibleJobs.length ? <div className="studio-job-list">{visibleJobs.map(job => <article key={job.id} className="studio-job">
         <span className="studio-job-icon"><Radio size={19} /></span>
@@ -644,8 +660,7 @@ export default function CommercialHome() {
     </section>
     {!!events.length && <section className="event-log studio-event-log"><div><h2>실행 기록</h2><button type="button" onClick={() => setEvents([])} aria-label="실행 기록 닫기"><X size={16} /></button></div><ol>{events.map((event, index) => <li key={index}><time>{new Date(event.at * 1000).toLocaleTimeString('ko-KR')}</time><span>{event.message || event.code}</span></li>)}</ol></section>}
     <footer className="studio-footer">Replay Live<span>예약한 방송은 화면을 닫아도 실행됩니다.</span></footer>
-    </>}
-    {studioReady && <div className="studio-launch-dock" aria-label="방송 준비 요약"><div className="studio-launch-inner"><div className="studio-launch-summary"><span className="studio-launch-icon"><Radio size={21} /></span><div><strong>{targets.length ? `${targets.length}개 ${hasLive ? '채널에 방송' : '파일 테스트'} ${startMode === 'scheduled' ? '예약' : '준비'}` : '방송할 채널을 선택하세요'}</strong><p>{sourceReady ? selected?.name : '영상 선택 필요'}<span className="studio-dot" />{startDescription}</p></div></div><div className="studio-launch-action"><p id="launch-hint" className={pendingReason ? '' : 'ready'} aria-live="polite">{pendingReason || '모든 준비가 끝났어요.'}</p><Button className="studio-launch-button" type="submit" form="broadcast-form" disabled={!!busy || !!pendingReason} aria-describedby="launch-hint">{busy === 'create' ? <LoaderCircle size={17} className="source-spinner" /> : startMode === 'scheduled' ? <CalendarClock size={17} /> : <Play size={17} fill="currentColor" />}{busy === 'create' ? '방송 등록 중…' : startMode === 'scheduled' ? '방송 예약하기' : '송출 시작'}{busy !== 'create' && <ArrowRight size={16} />}</Button></div></div></div>}
+    {canOperate && <div className="studio-launch-dock" aria-label="방송 준비 요약"><div className="studio-launch-inner"><div className="studio-launch-summary"><span className="studio-launch-icon"><Radio size={21} /></span><div><strong>{targets.length ? `${targets.length}개 ${hasLive ? '채널에 방송' : '파일 테스트'} ${startMode === 'scheduled' ? '예약' : '준비'}` : '방송할 채널을 선택하세요'}</strong><p>{sourceReady ? selected?.name : '영상 선택 필요'}<span className="studio-dot" />{startDescription}</p></div></div><div className="studio-launch-action"><p id="launch-hint" className={pendingReason ? '' : 'ready'} aria-live="polite">{pendingReason || '모든 준비가 끝났어요.'}</p><Button className="studio-launch-button" type="submit" form="broadcast-form" disabled={!!busy || !!pendingReason} aria-describedby="launch-hint">{busy === 'create' ? <LoaderCircle size={17} className="source-spinner" /> : startMode === 'scheduled' ? <CalendarClock size={17} /> : <Play size={17} fill="currentColor" />}{busy === 'create' ? '방송 등록 중…' : startMode === 'scheduled' ? '방송 예약하기' : '송출 시작'}{busy !== 'create' && <ArrowRight size={16} />}</Button></div></div></div>}
     </>}
   </main>;
 }
