@@ -1,7 +1,7 @@
 // Isolated headless browser; never attaches to a user's Chrome/profile.
 // OS hints, helper responses and release downloads are synthetic fixtures.
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -167,7 +167,7 @@ async function studioScenario() {
           '/api/usage': { storage_bytes: 1000, storage_limit_bytes: 100000000, storage_reserved_bytes: 0, storage_available_bytes: 99999000 },
           '/api/me': { tenant_id: 'fixture-tenant', subject: 'fixture-user', roles: [viewer ? 'viewer' : 'operator'] },
           '/api/stream-targets': { max_destinations: 1, targets: [{ id: 'youtube', label: 'YouTube Live', default_server_url: 'rtmp://a.rtmp.youtube.com/live2', requires_server_url: false, requires_stream_key: true, note: '', setup_url: null }] },
-          '/api/media-sources': { sources: [{ id: 'youtube', label: 'YouTube', note: '' }] },
+          '/api/media-sources': { sources: [{ id: 'youtube', label: 'YouTube', note: '' }, { id: 'direct', label: 'MP4 링크', note: 'HTTPS MP4 파일 주소를 입력하세요.' }] },
           '/api/device-imports': { id, token: 'task-only-fixture' },
           [`/api/device-imports/${id}`]: { state: 'completed', media: importedMedia },
         };
@@ -195,6 +195,54 @@ async function studioScenario() {
     const tickets = () => writes.filter(item => item.path === '/api/device-imports');
     await page.goto(origin + '/studio.html'); await opened();
     assert.equal(localRequests.length, 0); assert.deepEqual(writes, []);
+    // Progressive help stays out of the form until requested, including mobile.
+    const help = page.getByRole('button', { name: '영상 링크 도움말', exact: true });
+    const helpPopup = page.getByRole('dialog', { name: '영상 링크 안내', exact: true });
+    const nameSummary = page.locator('.studio-optional-field summary');
+    for (const [width, height] of [[1280, 900], [390, 844]]) {
+      await page.setViewportSize({ width, height });
+      assert.equal(await page.locator('#source-name').isVisible(), false);
+      assert.equal(await page.getByText('YouTube의 로그인·봇 확인으로 제한될 수 있어요.', { exact: false }).isVisible(), false);
+      await page.getByLabel('녹화 영상 링크', { exact: true }).fill('https://youtu.be/GcOe4ILS6Ow');
+      await help.scrollIntoViewIfNeeded();
+      const formHeight = (await page.locator('.source-import-form').boundingBox()).height;
+      if (process.env.REPLAY_HELPER_SCREENSHOTS) {
+        await mkdir(process.env.REPLAY_HELPER_SCREENSHOTS, { recursive: true });
+        await page.locator('.source-import-form').evaluate(element => element.scrollIntoView({ block: 'center' }));
+        await page.locator('.source-import-form').screenshot({ animations: 'disabled', path: path.join(process.env.REPLAY_HELPER_SCREENSHOTS, `source-${width}.png`) });
+      }
+      await help.focus(); await page.keyboard.press('Enter'); await helpPopup.waitFor();
+      await helpPopup.evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
+      await helpPopup.getByRole('heading', { name: '도우미는 언제 필요한가요?', exact: true }).waitFor();
+      assert.equal((await page.locator('.source-import-form').boundingBox()).height, formHeight);
+      const box = await helpPopup.boundingBox();
+      assert.ok(box.x >= 0 && box.x + box.width <= width + 1 && box.y >= 0 && box.y + box.height <= height + 1);
+      if (process.env.REPLAY_HELPER_SCREENSHOTS) await page.screenshot({ animations: 'disabled', path: path.join(process.env.REPLAY_HELPER_SCREENSHOTS, `help-${width}.png`) });
+      await page.keyboard.press('Escape'); await helpPopup.waitFor({ state: 'hidden' });
+      await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === '영상 링크 도움말');
+      assert.equal(await page.getByLabel('녹화 영상 링크', { exact: true }).inputValue(), 'https://youtu.be/GcOe4ILS6Ow');
+      await help.click(); await helpPopup.waitFor();
+      await helpPopup.getByRole('button', { name: '영상 링크 도움말 닫기', exact: true }).click();
+      await helpPopup.waitFor({ state: 'hidden' });
+      await help.click(); await helpPopup.waitFor();
+      await page.getByLabel('원본 영상 플랫폼', { exact: true }).click();
+      await helpPopup.waitFor({ state: 'hidden' });
+      await page.keyboard.press('Escape');
+      await nameSummary.click();
+      await page.getByLabel('보관함 이름', { exact: true }).fill('간단한 이름');
+      await nameSummary.click();
+      assert.equal(await page.locator('#source-name').isVisible(), false);
+      assert.equal(await page.locator('#source-name').inputValue(), '간단한 이름');
+    }
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.getByLabel('원본 영상 플랫폼', { exact: true }).selectOption('direct');
+    await help.click(); await helpPopup.waitFor();
+    assert.equal(await helpPopup.getByRole('link', { name: 'YouTube 다운로드 방법', exact: true }).count(), 0);
+    await helpPopup.getByText('HTTPS MP4 파일 주소를 입력하세요.', { exact: true }).waitFor();
+    await page.keyboard.press('Escape'); await helpPopup.waitFor({ state: 'hidden' });
+    await page.getByLabel('원본 영상 플랫폼', { exact: true }).selectOption('youtube');
+    assert.equal(localRequests.length, 0); assert.deepEqual(writes, []);
+    checks.push('link UX: concise initial form, click/keyboard help, Escape/close/outside dismissal, focus restoration, no layout shift, desktop/mobile bounds, provider-specific advice, collapsed optional name retains value, no helper/API writes from help');
     // Library/file/broadcast inputs work without any helper interaction.
     await page.getByRole('button', { name: '파일 업로드', exact: true }).click();
     await page.locator('input[type=file]').waitFor({ state: 'attached' });
@@ -233,6 +281,7 @@ async function studioScenario() {
     await page.locator('.studio-selected-media').getByText('자동 가져온 영상.mp4', { exact: true }).waitFor();
     assert.equal(tickets().length, 1);
     assert.equal(tickets()[0].body.url, 'https://youtu.be/GcOe4ILS6Ow');
+    assert.equal(tickets()[0].body.name, '간단한 이름');
     assert.equal(await page.locator('dialog[open]').count(), 0);
     assert.equal(await page.getByLabel('방송 이름', { exact: true }).inputValue(), '입력 유지 검증');
     // Reload never downloads again or re-pairs without a new explicit link action.

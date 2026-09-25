@@ -9,10 +9,12 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const require = createRequire(path.join(root, 'web/package.json'));
 const { createServer } = await import(require.resolve('vite'));
 const { default: react } = await import(require.resolve('@vitejs/plugin-react'));
+const { default: tailwindcss } = await import(require.resolve('@tailwindcss/postcss'));
 const scratch = await realpath(await mkdtemp(path.join(tmpdir(), 'replay-helper-browser-')));
 await writeFile(path.join(scratch, 'index.html'), '<html lang="ko"><meta charset="utf-8"><title>Replay 도우미 연결 검증</title><div id="root"></div><script type="module" src="/main.tsx"></script></html>');
 await writeFile(path.join(scratch, 'main.tsx'), `
 import React, {useCallback, useState} from 'react';
+import '@/app/globals.css';
 import {createRoot} from 'react-dom/client';
 import LocalImportConnection from '@/app/local-import-connection';
 import {createLocalImporter} from '@/lib/local-import';
@@ -36,9 +38,9 @@ function App() {
 createRoot(document.getElementById('root')).render(<App/>);
 `);
 await writeFile(path.join(scratch, 'studio.html'), '<html lang="ko"><meta charset="utf-8"><title>Replay 스튜디오 검증</title><div id="root"></div><script type="module" src="/studio.tsx"></script></html>');
-await writeFile(path.join(scratch, 'studio.tsx'), `import React from 'react'; import {createRoot} from 'react-dom/client'; import CommercialHome from '@/app/commercial'; createRoot(document.getElementById('root')).render(<CommercialHome/>);`);
+await writeFile(path.join(scratch, 'studio.tsx'), `import '@/app/globals.css'; import React from 'react'; import {createRoot} from 'react-dom/client'; import CommercialHome from '@/app/commercial'; createRoot(document.getElementById('root')).render(<CommercialHome/>);`);
 await writeFile(path.join(scratch, 'helper-release.json'), '{"version":null,"downloads":[]}');
-const server = await createServer({ configFile: false, root: scratch, publicDir:path.join(root,'web/public'), plugins:[react()],
+const server = await createServer({ configFile: false, root: scratch, publicDir:path.join(root,'web/public'), plugins:[react()], css:{postcss:{plugins:[tailwindcss()]}},
   define:{__REPLAY_COMMERCIAL__:'true',__REPLAY_CLOUD__:'false',__REPLAY_LOGIN__:JSON.stringify({provider:'google',google_client_id:''})},
   resolve:{alias:{'@':path.join(root,'web'),react:path.join(root,'web/node_modules/react'), 'react-dom':path.join(root,'web/node_modules/react-dom')}},
   server:{host:'127.0.0.1',port:Number(process.env.REPLAY_HELPER_PREVIEW_PORT || 3100),strictPort:true,fs:{allow:[root,scratch,await realpath(path.join(root,'web/node_modules'))]}}});
