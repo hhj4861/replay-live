@@ -21,13 +21,15 @@ function App() {
  const [client] = useState(createLocalImporter);
  const [connected, setConnected] = useState(false);
  const [offline, setOffline] = useState(false);
- const pair = useCallback(async (code, signal) => {await client.pair(code,signal); setConnected(client.isConnected());},[client]);
+ const [open, setOpen] = useState(false);
+ const pair = useCallback(async (code, signal) => {await client.pair(code,signal); setConnected(client.isConnected()); setOpen(false);},[client]);
  const discover = useCallback(signal => offline ? Promise.reject(new Error('검증용 도우미 미실행 상태')) : client.readPairingCode(signal),[client,offline]);
  return <main style={{maxWidth:900,margin:'60px auto',fontFamily:'sans-serif',padding:24}}>
  <h1>도우미 연결 브라우저 검증</h1><p>로그인은 검증용이며, 연결은 이 PC의 실제 도우미를 사용합니다. 영상 다운로드나 운영 계정 접근은 하지 않습니다.</p>
- {signedIn ? <><button onClick={() => {void client.disconnect();setConnected(false);setSignedIn(false);}}>검증용 로그아웃</button>
+ {signedIn ? <><button onClick={() => {void client.disconnect();setConnected(false);setSignedIn(false);setOpen(false);}}>검증용 로그아웃</button>
  <button onClick={() => {void client.disconnect();setConnected(false);setOffline(!offline);}}>{offline?'실제 도우미로 복귀':'미실행 상태 재현'}</button>
- <LocalImportConnection key={String(offline)} connected={connected} disabled={false} onLoadCode={discover} onConnect={pair} onDisconnect={() => {void client.disconnect();setConnected(false);}}/></>
+ <button onClick={() => setOpen(true)}>영상 가져오기</button><output>{connected ? "연결됨" : "미연결"}</output>
+ {open && <LocalImportConnection key={String(offline)} onLoadCode={discover} onConnect={pair} onClose={() => setOpen(false)} onUpload={() => setOpen(false)}/>}</>
  : <button onClick={() => setSignedIn(true)}>검증용 로그인</button>}
  </main>;
 }
