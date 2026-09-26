@@ -1,13 +1,16 @@
 """Import a public recording through a bounded, DNS-pinned HTTPS transport.
 
 yt-dlp is used only for selected, built-in metadata extractors. Its downloaders,
-plugins, JavaScript runtimes, cookies and default HTTP handlers are never used.
+plugins, cookies and default HTTP handlers are never used. Proxy-backed YouTube
+extraction may use Node with the pinned, bundled EJS signature solver; remote
+components stay disabled.
 Media/segments are downloaded here, then FFmpeg only receives local binary files.
 Network payload is capped at max_bytes + 16 MiB (metadata); temporary disk at
 2 * max_bytes (downloaded inputs plus one output). No source URL is an error text.
 """
 from contextlib import contextmanager
 import hashlib
+import base64
 import http.client
 import importlib
 import io
@@ -22,6 +25,7 @@ import ssl
 import tempfile
 import threading
 import time
+import uuid
 from urllib.parse import parse_qs, unquote, urljoin, urlsplit, urlunsplit
 
 import certifi
@@ -308,6 +312,11 @@ class _BudgetedSocket:
     def __getattr__(self, name):
         return getattr(self.sock, name)
 
+    def sendall(self, data, *args, **kwargs):
+        self.budget.check()
+        self.budget.consume_wire(len(data))
+        return self.sock.sendall(data, *args, **kwargs)
+
     def makefile(self, mode):
         # The unbuffered SocketIO preserves socket ownership/reference counting.
         return io.BufferedReader(_CheckedSocketReader(self.sock.makefile(mode, buffering=0), self.sock, self.budget))
@@ -332,6 +341,67 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         except BaseException:
             raw.close()
             raise
+
+
+class _ProxyHTTPSConnection(_PinnedHTTPSConnection):
+    """Trusted gateway, fixed public YouTube destinations, end-to-end TLS.
+
+    The gateway resolves only Google-owned hostnames. Arbitrary source URLs,
+    redirects and other providers must use the original DNS-pinned transport.
+    No proxy headers are forwarded inside the TLS tunnel.
+    """
+    def __init__(self, host, address, timeout, *, budget, proxy):
+        if not any(host == domain or host.endswith('.' + domain)
+                   for domain in ('youtube.com', 'googlevideo.com', 'ytimg.com')):
+            raise SourceImportError('SOURCE_URL_UNSAFE')
+        super().__init__(host, address, timeout, budget=budget)
+        self.proxy = proxy
+
+    def connect(self):
+        addresses = _resolve('gw.dataimpulse.com', self.budget)
+        raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            raw.settimeout(min(5, self.budget.remaining()))
+            raw.connect((addresses[0], 823))
+            authority = f'{self.host}:443'
+            request = (f'CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n'
+                       f'Proxy-Authorization: Basic {self.proxy}\r\n\r\n').encode('ascii')
+            self.budget.consume_wire(len(request))
+            raw.sendall(request)
+            header = bytearray()
+            # Read exactly the CONNECT header, never consume TLS bytes.
+            while not header.endswith(b'\r\n\r\n'):
+                self.budget.check()
+                raw.settimeout(min(5, self.budget.remaining()))
+                chunk = raw.recv(1)
+                if not chunk or len(header) >= 8192:
+                    raise SourceImportError('SOURCE_PROXY_UNAVAILABLE')
+                header.extend(chunk)
+                self.budget.consume_wire(1)
+            if not re.match(rb'HTTP/1\.[01] 200(?: |\r)', header):
+                raise SourceImportError('SOURCE_PROXY_UNAVAILABLE')
+            self.sock = _BudgetedSocket(self._context.wrap_socket(raw, server_hostname=self.host), self.budget)
+        except BaseException:
+            raw.close()
+            raise
+
+
+def _proxy_authorization(value):
+    try:
+        parsed = urlsplit(value)
+        if (parsed.scheme != 'http' or parsed.hostname != 'gw.dataimpulse.com' or parsed.port != 823
+                or not parsed.username or not parsed.password or parsed.query or parsed.fragment
+                or parsed.path not in ('', '/') or len(value) > 2048):
+            raise ValueError()
+        login, password = unquote(parsed.username), unquote(parsed.password)
+        if any(ord(c) < 33 or ord(c) > 126 for c in login + password) or ':' in login:
+            raise ValueError()
+        # A single egress session covers metadata, signatures and media bytes.
+        if 'sessid.' not in login:
+            login += (';' if '__' in login else '__') + 'sessid.' + uuid.uuid4().hex
+        return base64.b64encode(f'{login}:{password}'.encode()).decode('ascii')
+    except (ValueError, TypeError):
+        raise SourceImportError('SOURCE_PROXY_UNAVAILABLE') from None
 
 
 def _headers(values, *, metadata):
@@ -378,8 +448,9 @@ def _media_headers(*layers):
 
 
 class _Transport:
-    def __init__(self, budget):
+    def __init__(self, budget, proxy_url=None):
         self.budget = budget
+        self.proxy = _proxy_authorization(proxy_url) if proxy_url else None
 
     @contextmanager
     def response(self, url, *, headers=None, method='GET', data=None):
@@ -396,7 +467,10 @@ class _Transport:
                     raise SourceImportError('SOURCE_TOO_COMPLEX')
                 parsed = urlsplit(current)
                 addresses = _resolve(parsed.hostname, self.budget)
-                connection = _PinnedHTTPSConnection(parsed.hostname, addresses[0], min(5, self.budget.remaining()), budget=self.budget)
+                if self.proxy:
+                    connection = _ProxyHTTPSConnection(parsed.hostname, addresses[0], min(5, self.budget.remaining()), budget=self.budget, proxy=self.proxy)
+                else:
+                    connection = _PinnedHTTPSConnection(parsed.hostname, addresses[0], min(5, self.budget.remaining()), budget=self.budget)
                 path = urlunsplit(('', '', parsed.path, parsed.query, ''))
                 connection.request(method, path, body=data, headers=request_headers)
                 response = connection.getresponse()
@@ -531,6 +605,10 @@ def _extract(source, transport):
                   enable_file_urls=False, js_runtimes={}, remote_components=set(),
                   allowed_extractors=[], postprocessors=[], format='best',
                   extractor_args={'youtube': {'player_client': ['android_vr', 'web_safari']}})
+    if transport.proxy:
+        # Pinned, bundled EJS and Node execute signature challenges locally.
+        # All HTTP still goes through PinnedRH; remote components remain off.
+        params.update(js_runtimes={'node': {}}, extractor_args={})
     try:
         module, names = _EXTRACTORS[source['provider']]
         with PinnedYoutubeDL(params, auto_init=False) as ydl:
@@ -583,7 +661,7 @@ def _recording(info, max_duration):
             raise SourceImportError('SOURCE_DURATION_EXCEEDED') from None
 
 
-def _select_formats(info):
+def _select_formats(info, *, transcode=False):
     formats = info.get('formats') or [info]
     if not isinstance(formats, list) or len(formats) > 1000:
         raise SourceImportError('SOURCE_TOO_COMPLEX')
@@ -594,14 +672,14 @@ def _select_formats(info):
         protocol = fmt.get('protocol') or ('https' if str(fmt.get('url', '')).startswith('https:') else '')
         if protocol not in {'https', 'm3u8_native', 'm3u8', 'http_dash_segments'}:
             continue
-        if fmt.get('ext') not in {None, 'mp4', 'm4a'}:
+        if fmt.get('ext') not in ({None, 'mp4', 'm4a', 'webm'} if transcode else {None, 'mp4', 'm4a'}):
             continue
         if (fmt.get('height') or 0) > 1080 or (fmt.get('width') or 0) > 1920 or (fmt.get('fps') or 0) > 60:
             continue
         video, audio = str(fmt.get('vcodec') or ''), str(fmt.get('acodec') or '')
-        if video not in {'', 'none'} and not video.startswith(('avc', 'h264')):
+        if video not in {'', 'none'} and not video.startswith(('avc', 'h264', 'av01', 'vp9') if transcode else ('avc', 'h264')):
             continue
-        if audio not in {'', 'none'} and not audio.startswith(('mp4a', 'aac')):
+        if audio not in {'', 'none'} and not audio.startswith(('mp4a', 'aac', 'opus') if transcode else ('mp4a', 'aac')):
             continue
         candidates.append({**fmt, 'protocol': protocol})
     # Prefer one complete file; otherwise combine a video rendition and AAC audio.
@@ -713,6 +791,8 @@ def _binary_format(path):
         return 'mov'
     if len(header) >= 377 and header[0] == header[188] == header[376] == 0x47:
         return 'mpegts'
+    if header.startswith(b'\x1a\x45\xdf\xa3'):
+        return 'matroska,webm'
     # Force a binary demuxer; never let FFmpeg interpret a text playlist with file references.
     raise SourceImportError('SOURCE_FORMAT_UNSUPPORTED')
 
@@ -761,19 +841,22 @@ def _require_complete(actual, expected):
         raise SourceImportError('SOURCE_INCOMPLETE')
 
 
-def _make_mp4(paths, output, budget, max_duration, *, expected_duration=None):
+def _make_mp4(paths, output, budget, max_duration, *, expected_duration=None, transcode=False):
     infos = [_probe(path, budget, max_duration) for path in paths]
     videos = [s for s in infos[0]['streams'] if s.get('codec_type') == 'video']
     audios = [s for s in infos[-1]['streams'] if s.get('codec_type') == 'audio']
-    if (len(videos) != 1 or len(audios) != 1 or videos[0].get('codec_name') != 'h264'
-            or audios[0].get('codec_name') != 'aac'):
+    if (len(videos) != 1 or len(audios) != 1
+            or videos[0].get('codec_name') not in ({'h264', 'av1', 'vp9'} if transcode else {'h264'})
+            or audios[0].get('codec_name') not in ({'aac', 'opus'} if transcode else {'aac'})
+            or not 0 < videos[0].get('width', 0) <= 1920 or not 0 < videos[0].get('height', 0) <= 1920):
         raise SourceImportError('SOURCE_FORMAT_UNSUPPORTED')
     for info in infos:
         _require_complete(info['duration'], expected_duration)
     command = ['ffmpeg', '-hide_banner', '-nostdin', '-loglevel', 'error', '-xerror', '-threads', '2']
     for path in paths:
         command.extend(_local_input(path))
-    command.extend(['-map', '0:v:0', '-map', f'{len(paths) - 1}:a:0', '-c', 'copy', '-movflags', '+faststart',
+    codecs = ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-threads', '2', '-c:a', 'aac', '-b:a', '128k'] if transcode else ['-c', 'copy']
+    command.extend(['-map', '0:v:0', '-map', f'{len(paths) - 1}:a:0', *codecs, '-movflags', '+faststart',
                     '-f', 'mp4', '-y', str(output)])
 
     def active():
@@ -791,7 +874,7 @@ def _make_mp4(paths, output, budget, max_duration, *, expected_duration=None):
 
 
 def download_source(source, output: Path, *, max_bytes: int, max_duration: float,
-                    timeout: float, check_active):
+                    timeout: float, check_active, proxy_url=None):
     """Create one local H.264/AAC MP4, or remove partial files and raise a safe code."""
     if (not isinstance(source, dict) or isinstance(max_bytes, bool) or not isinstance(max_bytes, int)
             or not 0 < max_bytes <= 100 * 1024 ** 3
@@ -804,7 +887,8 @@ def download_source(source, output: Path, *, max_bytes: int, max_duration: float
     if output.exists() or output.is_symlink():
         raise SourceImportError('SOURCE_OUTPUT_EXISTS')
     budget = _Budget(max_bytes, timeout, check_active)
-    transport = _Transport(budget)
+    use_proxy = bool(proxy_url and normalized['provider'] == 'youtube')
+    transport = _Transport(budget, proxy_url if use_proxy else None)
     complete = False
     try:
         budget.check()
@@ -815,7 +899,7 @@ def download_source(source, output: Path, *, max_bytes: int, max_duration: float
             else:
                 info = _extract(normalized, transport)
                 _recording(info, max_duration)
-                formats = _select_formats(info)
+                formats = _select_formats(info, transcode=use_proxy)
                 expected_duration = float(info['duration']) if info.get('duration') is not None else None
             paths = []
             for index, fmt in enumerate(formats):
@@ -824,7 +908,7 @@ def download_source(source, output: Path, *, max_bytes: int, max_duration: float
                 if declared_duration is not None:
                     expected_duration = max(expected_duration or 0, declared_duration)
                 paths.append(path)
-            _make_mp4(paths, output, budget, max_duration, expected_duration=expected_duration)
+            _make_mp4(paths, output, budget, max_duration, expected_duration=expected_duration, transcode=use_proxy)
         digest = hashlib.sha256()
         with output.open('rb') as file:
             while chunk := file.read(_CHUNK):

@@ -1,0 +1,367 @@
+"""Cloud-only feasibility probe; never imported by the production API.
+
+Run inside a disposable, credential-free VM with public-only egress. Reports
+contain categories/metadata only, never cookies, tokens or signed media URLs.
+"""
+import argparse
+from contextlib import ExitStack
+import hashlib
+from http.cookiejar import Cookie
+import importlib.metadata
+import json
+import math
+import os
+from pathlib import Path
+import re
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from urllib.parse import urlsplit
+
+LIMIT = 50 * 1024**2
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def video_url(video_id):
+    if not re.fullmatch(r'[A-Za-z0-9_-]{11}', video_id):
+        raise ValueError('INVALID_VIDEO_ID')
+    return f'https://www.youtube.com/watch?v={video_id}'
+
+
+def configured_proxy():
+    value = os.environ.get('REPLAY_PROBE_PROXY_URL', '')
+    try:
+        parsed = urlsplit(value)
+        valid = (parsed.scheme == 'http' and parsed.hostname == 'gw.dataimpulse.com'
+                 and parsed.port == 823 and parsed.username and parsed.password
+                 and not parsed.query and not parsed.fragment and parsed.path in ('', '/'))
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ValueError('PROXY_CONFIGURATION_REQUIRED')
+    return value
+
+
+def category(message):
+    message = str(message).lower()
+    for fragments, code in [
+        (("confirm you're not a bot", 'confirm you’re not a bot', 'source_bot_check_required'), 'BOT_CHECK_REQUIRED'),
+        (('http error 403', 'http error 429'), 'HTTP_ACCESS_REJECTED'),
+        (('sign in', 'login required', 'private video'), 'LOGIN_REQUIRED'),
+        (('requested format is not available',), 'FORMAT_UNAVAILABLE'),
+        (('timed out', 'timeouterror'), 'TIMEOUT'),
+        (('source_too_large',), 'SIZE_LIMIT'),
+    ]:
+        if any(fragment in message for fragment in fragments):
+            return code
+    return 'DOWNLOAD_FAILED'
+
+
+class SafeLogger:
+    def __init__(self):
+        self.categories = set()
+        self.provider_seen = False
+        self.token_generated = False
+        self.ejs_seen = False
+
+    def debug(self, message):
+        text = str(message).lower()
+        self.provider_seen |= any(name in text for name in ('bgutil', 'wpc')) and 'provider' in text
+        self.token_generated |= 'po token' in text and ('generated' in text or 'successfully' in text)
+        self.ejs_seen |= '[jsc' in text and ('solving' in text or 'challenge' in text)
+        code = category(text)
+        if code != 'DOWNLOAD_FAILED':
+            self.categories.add(code)
+
+    warning = error = info = debug
+
+
+def reject_metadata(info, *, incomplete=False):
+    duration = info.get('duration')
+    if info.get('is_live') or info.get('live_status') in ('is_live', 'is_upcoming', 'post_live'):
+        return 'LIVE_NOT_SUPPORTED'
+    if info.get('availability') not in (None, 'public', 'unlisted'):
+        return 'RESTRICTED_VIDEO'
+    if duration is None and incomplete:
+        return None
+    if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or not 1 <= duration <= 120:
+        return 'DURATION_LIMIT'
+    return None
+
+
+def media_info(path):
+    result = subprocess.run(['ffprobe', '-v', 'error', '-show_streams', '-show_format', '-of', 'json', str(path)],
+                            capture_output=True, timeout=15, check=True)
+    data = json.loads(result.stdout)
+    streams = data['streams']
+    videos = [s for s in streams if s['codec_type'] == 'video']
+    audios = [s for s in streams if s['codec_type'] == 'audio']
+    if len(videos) != 1 or len(audios) != 1:
+        raise ValueError('INVALID_STREAMS')
+    duration = float(data['format']['duration'])
+    if not math.isfinite(duration) or not 1 <= duration <= 120:
+        raise ValueError('DURATION_LIMIT')
+    return dict(duration=duration, video_codec=videos[0]['codec_name'], audio_codec=audios[0]['codec_name'],
+                width=videos[0]['width'], height=videos[0]['height'])
+
+
+def normalize(source, output, expected_duration):
+    original = media_info(source)
+    if abs(original['duration'] - expected_duration) > max(1.0, expected_duration * .02):
+        raise ValueError('INCOMPLETE_DOWNLOAD')
+    subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-i', str(source), '-map', '0:v:0', '-map', '0:a:0',
+                    '-c:v', 'libx264', '-preset', 'fast', '-crf', '20', '-pix_fmt', 'yuv420p',
+                    '-c:a', 'aac', '-movflags', '+faststart', '-fs', str(LIMIT), str(output)],
+                   capture_output=True, timeout=90, check=True)
+    if not 0 < output.stat().st_size < LIMIT:
+        raise ValueError('SIZE_LIMIT')
+    normalized = media_info(output)
+    if abs(normalized['duration'] - expected_duration) > max(1.0, expected_duration * .02):
+        raise ValueError('INCOMPLETE_TRANSCODE')
+    subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-i', str(output), '-map', '0:v:0', '-map', '0:a:0', '-f', 'null', '-'],
+                   capture_output=True, timeout=45, check=True)
+    return dict(original=original, normalized=normalized, bytes=output.stat().st_size,
+                sha256=hashlib.sha256(output.read_bytes()).hexdigest(), full_decode=True)
+
+
+def observe_engine(events):
+    """Count real calls/results, never preserve request/response secrets."""
+    from yt_dlp.extractor.youtube import YoutubeIE
+    from yt_dlp.extractor.youtube.pot.provider import PoTokenProvider
+    from yt_dlp.extractor.youtube.jsc.provider import JsChallengeProvider
+    original_player = YoutubeIE._extract_player_response
+    original_token = PoTokenProvider.request_pot
+    original_solve = JsChallengeProvider.bulk_solve
+
+    def player(self, *args, **kwargs):
+        response = original_player(self, *args, **kwargs)
+        status = (response or {}).get('playabilityStatus', {}).get('status')
+        events['player_statuses'].append(status if status in ('OK', 'LOGIN_REQUIRED', 'ERROR', 'UNPLAYABLE') else 'OTHER')
+        return response
+
+    def token(self, request):
+        events['token_requests'] += 1
+        response = original_token(self, request)
+        if response and response.po_token:
+            events['tokens_returned'] += 1
+        return response
+
+    def solve(self, requests):
+        events['js_requests'] += len(requests)
+        for response in original_solve(self, requests):
+            if response.error is None:
+                events['js_responses_ok'] += 1
+            yield response
+
+    YoutubeIE._extract_player_response = player
+    PoTokenProvider.request_pot = token
+    JsChallengeProvider.bulk_solve = solve
+
+
+def browser_guest(video_id, events):
+    """An anonymous browser created in the cloud, never the user's profile."""
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            context = browser.new_context()
+            page = context.new_page()
+            page.goto(video_url(video_id), wait_until='domcontentloaded', timeout=45_000)
+            page.wait_for_timeout(5000)
+            state = page.evaluate('''() => {
+                const p = window.ytInitialPlayerResponse?.playabilityStatus;
+                const v = document.querySelector('video');
+                if (v) { v.muted = true; v.play().catch(() => {}); }
+                return {status: p?.status || 'UNKNOWN', video: !!v};
+            }''')
+            page.wait_for_timeout(3000)
+            events['browser_player_status'] = state['status'] if state['status'] in ('OK', 'LOGIN_REQUIRED', 'ERROR', 'UNPLAYABLE') else 'OTHER'
+            events['browser_playback_seconds'] = page.evaluate('() => document.querySelector("video")?.currentTime || 0')
+            return [c for c in context.cookies() if c['domain'].lstrip('.') in ('youtube.com', 'www.youtube.com')]
+        finally:
+            browser.close()
+
+
+def verify_playback(media):
+    """Play the downloaded MP4 to its end in the cloud's headless Chromium."""
+    from playwright.sync_api import sync_playwright
+    player = media.parent / 'player.html'
+    player.write_text(f'<!doctype html><video muted playsinline src="{media.name}"></video>')
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.goto(player.as_uri())
+            page.evaluate('() => document.querySelector("video").play()')
+            page.wait_for_function('() => document.querySelector("video").ended', timeout=140_000)
+            result = page.evaluate('''() => {
+                const v = document.querySelector('video');
+                return {ended:v.ended, current_time:v.currentTime, duration:v.duration,
+                        decoded_frames:v.getVideoPlaybackQuality().totalVideoFrames,
+                        error_code:v.error?.code || null};
+            }''')
+            if (not result['ended'] or result['error_code'] or result['decoded_frames'] <= 0
+                    or abs(result['duration'] - result['current_time']) > .25):
+                raise ValueError('BROWSER_PLAYBACK_FAILED')
+            return result
+        finally:
+            browser.close()
+
+
+def child(mode, video_id, directory):
+    # Parent supervisor enforces a deadline and aggregate disk limit even when
+    # a downloader, JS provider or FFmpeg is stuck outside a progress callback.
+    sys.path.insert(0, str(ROOT))
+    report = dict(mode=mode, video_id=video_id, ok=False, phase='download',
+                  yt_dlp_version=importlib.metadata.version('yt-dlp'))
+    logger = SafeLogger()
+    events = dict(token_requests=0, tokens_returned=0, js_requests=0, js_responses_ok=0,
+                  player_statuses=[], media_bytes_observed=0)
+    start = time.monotonic()
+    resources = ExitStack()
+    proxy = None
+    try:
+        if mode in ('baseline', 'production-proxy'):
+            from server.media_sources import download_source
+            output = directory / 'baseline.mp4'
+            result = download_source(dict(provider='youtube', url=video_url(video_id)), output,
+                                     max_bytes=LIMIT, max_duration=120, timeout=120, check_active=lambda: None,
+                                     proxy_url=os.environ.get('REPLAY_PROBE_PROXY_URL') if mode == 'production-proxy' else None)
+            report.update(result, media=media_info(output))
+            if mode == 'production-proxy' and os.environ.get('REPLAY_PROBE_PLAYBACK') == '1':
+                report['browser_playback'] = verify_playback(output)
+        else:
+            from yt_dlp import YoutubeDL
+            observe_engine(events)
+            def progress(data):
+                events['media_bytes_observed'] = max(events['media_bytes_observed'], data.get('downloaded_bytes', 0))
+                if data.get('downloaded_bytes', 0) > LIMIT:
+                    raise ValueError('SOURCE_TOO_LARGE')
+            args = {'youtube': {'player_client': ['mweb']}} if mode.startswith('pot') else {}
+            if mode.startswith('pot'):
+                args['youtubepot-bgutilscript'] = {'server_home': ['/vercel/sandbox/bgutil/server']}
+                args['youtubepot-bgutilhttp'] = {'disable': ['true']}
+                if mode == 'pot-always':
+                    args['youtube']['fetch_pot'] = ['always']
+            if mode == 'wpc':
+                # nodriver 0.50.3 expects a current event loop; Python 3.14 no
+                # longer creates one implicitly. Load explicitly to fail closed
+                # when the provider cannot import instead of testing without it.
+                import asyncio
+                asyncio.set_event_loop(asyncio.new_event_loop())
+                try:
+                    from yt_dlp.plugins import load_all_plugins
+                    load_all_plugins()
+                    provider = importlib.import_module('yt_dlp_plugins.extractor.getpot_wpc')
+                    if not hasattr(provider, 'WPCPTP'):
+                        raise ImportError('WPC_PROVIDER_UNAVAILABLE')
+                    events['wpc_imported'] = True
+                except Exception as error:
+                    events['wpc_import_error_type'] = type(error).__name__
+                    raise ValueError('PROVIDER_IMPORT_FAILED') from None
+                args = {'youtube': {'player_client': ['mweb'], 'fetch_pot': ['always']},
+                        'youtubepot-wpc': {'browser_path': [Path('/vercel/sandbox/browser-path.txt').read_text().strip()]}}
+            options = dict(quiet=True, verbose=True, no_warnings=True, logger=logger, cachedir=False,
+                           proxy='', cookiefile=None, cookiesfrombrowser=None, usenetrc=False,
+                           noplaylist=True, retries=0, extractor_retries=0, fragment_retries=0, socket_timeout=10,
+                           js_runtimes={'node': {}}, remote_components=set(), extractor_args=args,
+                           format='bv*[height<=720]+ba/b[height<=720]', merge_output_format='mp4',
+                           outtmpl=str(directory / 'source.%(ext)s'), max_filesize=LIMIT,
+                           match_filter=reject_metadata, progress_hooks=[progress],
+                           hls_prefer_native=True, concurrent_fragment_downloads=1)
+            if mode == 'proxy':
+                from probe_proxy_budget import BudgetProxy
+                proxy = resources.enter_context(BudgetProxy(configured_proxy()))
+                options['proxy'] = proxy.url
+                options['geo_verification_proxy'] = options['proxy']
+            if mode == 'impersonated':
+                from yt_dlp.networking.impersonate import ImpersonateTarget
+                options['impersonate'] = ImpersonateTarget.from_str('chrome')
+            guest_cookies = browser_guest(video_id, events) if mode == 'browser' else []
+            with YoutubeDL(options) as downloader:
+                for cookie in guest_cookies:
+                    downloader.cookiejar.set_cookie(Cookie(0, cookie['name'], cookie['value'], None, False,
+                        cookie['domain'], True, cookie['domain'].startswith('.'), cookie['path'], True,
+                        cookie['secure'], int(cookie['expires']) if cookie['expires'] > 0 else None,
+                        cookie['expires'] <= 0, None, None, {}, False))
+                info = downloader.extract_info(video_url(video_id), download=True)
+            rejection = reject_metadata(info or {})
+            if rejection:
+                raise ValueError(rejection)
+            files = [p for p in directory.glob('source.*') if p.suffix in ('.mp4', '.webm', '.mkv')]
+            if len(files) != 1 or not 0 < files[0].stat().st_size < LIMIT:
+                raise ValueError('NO_COMPLETE_MEDIA')
+            report['phase'] = 'normalize'
+            report.update(normalize(files[0], directory / 'normalized.mp4', info['duration']))
+            if mode == 'proxy' and os.environ.get('REPLAY_PROBE_PLAYBACK') == '1':
+                report['phase'] = 'browser_playback'
+                report['browser_playback'] = verify_playback(directory / 'normalized.mp4')
+        report.update(ok=True, phase='complete')
+    except Exception as error:
+        code = str(error)
+        report['error'] = code if code in {'DURATION_LIMIT', 'LIVE_NOT_SUPPORTED', 'RESTRICTED_VIDEO', 'SIZE_LIMIT',
+                                         'NO_COMPLETE_MEDIA', 'INCOMPLETE_DOWNLOAD', 'INCOMPLETE_TRANSCODE', 'INVALID_STREAMS',
+                                         'PROVIDER_IMPORT_FAILED', 'PROXY_CONFIGURATION_REQUIRED',
+                                         'BROWSER_PLAYBACK_FAILED'} else category(error)
+        report['exception_type'] = type(error).__name__
+    finally:
+        if proxy:
+            events['proxy_bytes_counted'] = proxy.transferred
+            events['proxy_byte_limit'] = proxy.limit
+            events['proxy_budget_exhausted'] = proxy.exhausted.is_set()
+            if proxy.exhausted.is_set():
+                report.update(ok=False, error='PROXY_BYTE_LIMIT')
+        resources.close()
+    report.update(elapsed_ms=round((time.monotonic() - start) * 1000), events=events,
+                  messages=sorted(logger.categories), provider_seen=logger.provider_seen,
+                  token_success_log_observed=logger.token_generated, ejs_log_observed=logger.ejs_seen)
+    return report
+
+
+def supervise(mode, video_id):
+    video_url(video_id)
+    with tempfile.TemporaryDirectory(prefix='replay-youtube-probe-') as tmp:
+        directory = Path(tmp)
+        result_file = directory / 'result.json'
+        process = subprocess.Popen([sys.executable, __file__, '--child', '--mode', mode, '--video-id', video_id,
+                                    '--directory', tmp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   start_new_session=True)
+        start = time.monotonic()
+        failure = None
+        try:
+            while process.poll() is None:
+                if time.monotonic() - start > 240:
+                    failure = 'TIMEOUT'
+                    break
+                total = sum(p.stat().st_size for p in directory.rglob('*') if p.is_file())
+                if total > 3 * LIMIT:
+                    failure = 'DISK_LIMIT'
+                    break
+                time.sleep(.2)
+        finally:
+            # Also stop descendants when the parent exits early.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+        if failure or not result_file.exists():
+            return dict(mode=mode, video_id=video_id, ok=False, error=failure or 'PROBE_PROCESS_FAILED', exit_code=process.returncode)
+        return json.loads(result_file.read_text())
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--mode', choices=['baseline', 'standard', 'pot', 'pot-always', 'browser', 'impersonated', 'wpc', 'proxy', 'production-proxy'], required=True)
+    parser.add_argument('--video-id', required=True)
+    parser.add_argument('--child', action='store_true')
+    parser.add_argument('--directory')
+    args = parser.parse_args()
+    video_url(args.video_id)
+    if args.child:
+        report = child(args.mode, args.video_id, Path(args.directory))
+        (Path(args.directory) / 'result.json').write_text(json.dumps(report))
+    else:
+        print(json.dumps(supervise(args.mode, args.video_id), sort_keys=True))

@@ -14,8 +14,6 @@ import BroadcastWatchLinks, { type BroadcastLinks } from './broadcast-watch-link
 import MemberManagement from './member-management';
 import { canManageMembers, type Account } from '@/lib/member-management';
 import { createMediaSelection } from './media-selection';
-import { createLocalImporter, LocalImportError, type LocalImportPhase } from '@/lib/local-import';
-import LocalImportConnection from './local-import-connection';
 import LocalImportFailure, { type ImportFailure } from './local-import-failure';
 import SourceLinkHelp from './source-link-help';
 import './commercial-studio.css';
@@ -53,6 +51,7 @@ const failures: Record<string, string> = {
   SOURCE_PROVIDER_MISMATCH: '선택한 원본 플랫폼과 링크의 사이트가 다릅니다. 플랫폼 선택을 확인하세요.',
   SOURCE_RECORDING_REQUIRED: '생방송·재생목록 대신 녹화 영상 한 편의 링크를 입력하세요.',
   SOURCE_RESTRICTED: '로그인이나 플랫폼의 접근 제한으로 가져올 수 없습니다. 접근 가능한 MP4 다운로드 링크 또는 파일 업로드를 사용하세요.',
+  SOURCE_PROXY_UNAVAILABLE: '영상 다운로드 연결을 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.',
   SOURCE_BOT_CHECK_REQUIRED: '원본 플랫폼이 봇 확인을 요구해 영상을 가져오지 못했습니다. 브라우저에서 재생되는 공개 영상도 해당될 수 있습니다. 본인 영상의 MP4 파일을 업로드하세요.',
   SOURCE_ACCESS_DENIED: '원본 플랫폼이 영상 다운로드를 허용하지 않았습니다. 본인 영상의 MP4 파일을 업로드하거나, 사용 가능한 새 MP4 다운로드 링크를 입력하세요.',
   SOURCE_RATE_LIMITED: '원본 플랫폼이 요청을 일시적으로 제한했습니다. 잠시 후 다시 시도하거나 MP4 파일을 업로드하세요.',
@@ -114,11 +113,7 @@ export default function CommercialHome() {
   const picker = useRef<HTMLInputElement>(null);
   const pendingUpload = useRef<{ id: string; digest: string } | null>(null);
   const [mediaSelection] = useState(() => createMediaSelection());
-  const [localImporter] = useState(() => createLocalImporter());
-  const [helperInstallOpen, setHelperInstallOpen] = useState(false);
-  const helperRequest = useRef<{ identity: string; resolve: (connected: boolean) => void } | null>(null);
-  const [localPhase, setLocalPhase] = useState<LocalImportPhase | ''>('');
-  const localImportAbort = useRef<AbortController | null>(null);
+  const importRequest = useRef<{ body: string; key: string } | null>(null);
   const uploading = useRef<XMLHttpRequest | null>(null);
   const actionVersion = useRef(0);
   const refreshVersion = useRef(0);
@@ -154,15 +149,12 @@ export default function CommercialHome() {
     setMediaId(''); setUsage(undefined); setHealth(undefined); setCatalog(undefined); setOutputEstimate(undefined);
     setEvents([]); setConfirmed(false); setBusy(''); setError(''); setImportFailure(null); setNotice(''); setUploadProgress(0);
     setTitle(''); setTargets([]); setSchedule(''); setStartMode('now'); setHistoryFilter('all');
-    localImportAbort.current?.abort(); localImportAbort.current = null;
-    helperRequest.current?.resolve(false); helperRequest.current = null;
-    void localImporter.disconnect(); setHelperInstallOpen(false); setLocalPhase('');
+    importRequest.current = null;
     setSourceCatalog(undefined); setSourceMode('link'); setSourceProvider('youtube'); setSourceUrl(''); setSourceName(''); setImportId('');
     connectionStoreRef.current = undefined; connectionOwnerRef.current = undefined; connectionListVersion.current += 1;
     setConnectionOwner(undefined); setConnectionStore(undefined); setSavedConnections({}); setConnectionStorageError('');
     setAccount(undefined); setManagementView(''); managementTrigger.current = null;
-  }, [connectionAutofill, mediaSelection, localImporter]);
-  useEffect(() => () => { helperRequest.current?.resolve(false); helperRequest.current = null; localImportAbort.current?.abort(); void localImporter.disconnect(); }, [localImporter]);
+  }, [connectionAutofill, mediaSelection]);
   useEffect(() => {
     window.addEventListener('replay-signin-required', resetAccount);
     return () => window.removeEventListener('replay-signin-required', resetAccount);
@@ -173,7 +165,10 @@ export default function CommercialHome() {
     const identity = sessionIdentity();
     const version = ++refreshVersion.current;
     const selectionGeneration = mediaSelection.capture();
-    const [m, j, h, u, me, choices, sources] = await Promise.all([api<Media[]>('/media', { signal }), api<Job[]>('/broadcasts', { signal }), api<Health>('/health', { signal }).catch(() => undefined), api<Usage>('/usage', { signal }), api<Account>('/me', { signal }), api<TargetCatalog>('/stream-targets', { signal }), api<SourceCatalog>('/media-sources', { signal }).catch(() => undefined)]);
+    const timeout = AbortSignal.timeout(15000);
+    const bounded = signal ? AbortSignal.any([signal, timeout]) : timeout;
+    // Account identity unlocks the studio independently of slower inventory.
+    const me = await api<Account>('/me', { signal: bounded });
     if (signal?.aborted || version !== refreshVersion.current) return;
     assertSessionIdentity(identity);
     const previousOwner = connectionOwnerRef.current;
@@ -182,15 +177,23 @@ export default function CommercialHome() {
       connectionStoreRef.current = undefined; connectionListVersion.current += 1;
       connectionOwnerRef.current = nextOwner; setConnectionOwner(nextOwner);
       setConnectionStore(undefined); setSavedConnections({}); setConnectionStorageError('');
-      if (previousOwner) { setImportFailure(null); localImportAbort.current?.abort(); void localImporter.disconnect(); helperRequest.current?.resolve(false); helperRequest.current = null; setHelperInstallOpen(false); connectionAutofill.reset(); mediaSelection.reset(); setImportId(''); setMediaId(''); setPreview(null); setDestinations({}); setConfirmed(false); setManagementView(''); }
+      if (previousOwner) { setImportFailure(null); importRequest.current = null; connectionAutofill.reset(); mediaSelection.reset(); setImportId(''); setMediaId(''); setPreview(null); setDestinations({}); setConfirmed(false); setManagementView(''); }
     }
     if (!me.roles.includes('admin') && !me.roles.includes('operator')) {
-      helperRequest.current?.resolve(false); helperRequest.current = null; setHelperInstallOpen(false);
       connectionStoreRef.current = undefined; setConnectionStore(undefined); setSavedConnections({});
       connectionAutofill.reset(); setDestinations({}); setConfirmed(false);
     }
-    setMedia(m); setJobs(j); setHealth(current => h || (current ? { ...current, ready: false } : undefined)); setUsage(u); setRoles(me.roles); setCatalog(choices); setSourceCatalog(sources); setConnected(true);
-    setAccount(me);
+    setAccount(me); setRoles(me.roles); setConnected(true);
+    const [m, j, u, choices, sources, limits] = await Promise.all([
+      api<Media[]>('/media', { signal: bounded }), api<Job[]>('/broadcasts', { signal: bounded }),
+      api<Usage>('/usage', { signal: bounded }), api<TargetCatalog>('/stream-targets', { signal: bounded }),
+      api<SourceCatalog>('/media-sources', { signal: bounded }).catch(() => undefined),
+      api<Omit<Health, 'ready'>>('/limits', { signal: bounded }),
+    ]);
+    if (bounded.aborted || version !== refreshVersion.current) return;
+    assertSessionIdentity(identity);
+    setMedia(m); setJobs(j); setUsage(u); setCatalog(choices); setSourceCatalog(sources);
+    setHealth(current => ({ ...limits, ready: current?.ready ?? false }));
     if (!canManageMembers(me)) setManagementView(current => current === 'members' ? '' : current);
     const selection = mediaSelection.reconcile(m, identity, selectionGeneration);
     if (selection.kind === 'ready') {
@@ -199,7 +202,21 @@ export default function CommercialHome() {
     } else if (selection.kind === 'default') {
       setMediaId(current => mediaSelection.capture() !== selectionGeneration ? current : current && m.some(item => item.id === current && item.status === 'ready') ? current : selection.allowFirst ? m.find(item => item.status === 'ready')?.id || '' : '');
     }
-  }, [connectionAutofill, mediaSelection, localImporter]);
+  }, [connectionAutofill, mediaSelection]);
+  useEffect(() => {
+    if (!authenticated) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    const check = async () => {
+      const identity = sessionIdentity();
+      const value = await api<Health>('/health', { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(12000)]) }).catch(() => undefined);
+      if (controller.signal.aborted || identity !== sessionIdentity()) return;
+      setHealth(current => value || (current ? { ...current, ready: false } : undefined));
+      timer = setTimeout(() => void check(), 30000);
+    };
+    void check();
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [authenticated]);
   useEffect(() => {
     if (!authenticated) return;
     const controller = new AbortController(); let active = true; let running = false; let timer: ReturnType<typeof setTimeout>;
@@ -273,13 +290,8 @@ export default function CommercialHome() {
         if ((err as Error).name === 'AbortError') setNotice('영상 가져오기를 취소했습니다.');
         else {
           const message = failures[(err as Error).message] || (err as Error).message;
-          if (name === 'import' || name === 'local-connect') {
-            const titles: Record<LocalImportPhase, string> = { requesting: '가져오기 요청에 실패했습니다.',
-              downloading: '내 컴퓨터에서 영상을 내려받지 못했습니다.', transferring: '영상 파일을 전달하지 못했습니다.',
-              uploading: '보관함 업로드에 실패했습니다.', validating: '업로드 완료 확인에 실패했습니다.' };
-            setImportFailure({ title: name === 'local-connect' ? '도우미를 연결하지 못했습니다.'
-              : err instanceof LocalImportError ? titles[err.phase] : '영상 가져오기를 시작하지 못했습니다.',
-              message, connect: name === 'local-connect' });
+          if (name === 'import') {
+            setImportFailure({ title: '영상 가져오기를 시작하지 못했습니다.', message, connect: false });
           } else setError(message);
         }
       }
@@ -423,56 +435,27 @@ export default function CommercialHome() {
     await action('upload', () => sendUpload(file, sessionIdentity(), 'upload'));
     if (picker.current) picker.current.value = '';
   }
-  function closeHelper() {
-    helperRequest.current?.resolve(false); helperRequest.current = null;
-    setHelperInstallOpen(false);
-  }
-  const connectLocal = useCallback(async (code: string, signal: AbortSignal) => {
-    const request = helperRequest.current;
-    if (!request) return;
-    assertSessionIdentity(request.identity);
-    await localImporter.pair(code, signal);
-    signal.throwIfAborted(); assertSessionIdentity(request.identity);
-    if (helperRequest.current !== request) return;
-    helperRequest.current = null;
-    request.resolve(true);
-    setHelperInstallOpen(false);
-  }, [localImporter]);
   async function importSource(event?: React.SyntheticEvent<HTMLFormElement, SubmitEvent>) {
     event?.preventDefault();
-    if (busy || helperRequest.current || localImportAbort.current) return;
+    if (busy) return;
     await action('import', async () => {
       const identity = sessionIdentity();
       if (importPending || !sourcePlatform || !health) throw new Error('원본 플랫폼과 진행 중인 가져오기를 확인하세요.');
-      let url: URL;
-      try { url = new URL(sourceUrl.trim()); } catch { throw new Error('녹화 영상의 전체 HTTPS 링크를 입력하세요.'); }
-      if (url.protocol !== 'https:' || (url.port && url.port !== '443') || url.username || url.password || url.hash || url.href.length > 4096) throw new Error('계정 정보나 # 조각 주소가 없는 HTTPS 영상 링크를 입력하세요.');
-      const maxBytes = Math.min(health.max_upload_mb * 1024 ** 2, usage?.storage_available_bytes ?? Infinity, 50 * 1024 ** 2);
-      if (maxBytes < 1) throw new Error('보관함의 저장 공간이 부족합니다.');
-      // Keep the original submit alive across installation; cancel/logout discard it.
-      // Inputs stay unchanged and no cloud job exists until pairing succeeds.
-      if (!localImporter.isConnected()) {
-        const paired = await new Promise<boolean>(resolve => {
-          helperRequest.current = { identity, resolve }; setHelperInstallOpen(true);
-        });
-        if (!paired) return;
-        assertSessionIdentity(identity);
-      }
-      const controller = new AbortController(); localImportAbort.current = controller;
+      const body = JSON.stringify({ provider: sourceProvider, url: sourceUrl.trim(), name: sourceName.trim() || undefined });
+      // Retry an uncertain acknowledgement with the same key; only a confirmed
+      // response releases it. No helper, local network or browser file transfer.
+      if (importRequest.current?.body !== body) importRequest.current = { body, key: crypto.randomUUID() };
       const selection = mediaSelection.begin(identity);
-      setMediaId(''); setPreview(null); setImportId(''); setConfirmed(false); setPreparationKind('import');
-      try {
-        const uploaded = await localImporter.runCloud<Media>({ provider: sourceProvider, url: url.href, name: sourceName }, controller.signal,
-          phase => { if (identity === sessionIdentity()) setLocalPhase(phase); });
-        assertSessionIdentity(identity); controller.signal.throwIfAborted();
-        if (!mediaSelection.register(selection, uploaded.id)) return;
-        setImportId(uploaded.id); setMedia(current => [uploaded, ...current.filter(item => item.id !== uploaded.id)]);
-        setNotice('내 컴퓨터에서 보관함에 업로드했습니다. 검사가 끝나면 이 영상이 자동으로 선택됩니다.');
-        void refresh().catch(() => setConnected(false));
-      } finally {
-        if (identity === sessionIdentity()) { setLocalPhase(''); }
-        if (localImportAbort.current === controller) localImportAbort.current = null;
-      }
+      const result = await api<{ media: Media }>('/media/imports', { method: 'POST',
+        signal: AbortSignal.timeout(20000), headers: { 'Content-Type': 'application/json',
+          'Idempotency-Key': importRequest.current.key }, body });
+      assertSessionIdentity(identity);
+      importRequest.current = null;
+      if (!mediaSelection.register(selection, result.media.id)) return;
+      setMediaId(''); setPreview(null); setConfirmed(false); setPreparationKind('import');
+      setImportId(result.media.id); setMedia(current => [result.media, ...current.filter(item => item.id !== result.media.id)]);
+      setNotice('서버에서 영상을 가져오고 있습니다. 완료되면 내 보관함에 저장됩니다.');
+      void refresh().catch(() => setConnected(false));
     });
   }
   async function create(event: React.SyntheticEvent<HTMLFormElement, SubmitEvent>) {
@@ -552,7 +535,7 @@ export default function CommercialHome() {
     <header className="topbar studio-topbar member-topbar"><a href="#studio-top" className="brand" onClick={() => { setManagementView(''); }}><span className="studio-brand-icon"><Radio size={22} /></span><strong>Replay Live</strong></a><nav aria-label="스튜디오 메뉴"><a href="#broadcast-history" onClick={() => { setManagementView(''); }}><History size={16} />방송 이력{activeJobs.length > 0 && <span className="studio-nav-count">{activeJobs.length}</span>}</a>
       <Button variant="ghost" className="member-nav-button" disabled={!account || !!busy} aria-pressed={managementView === 'account'} onClick={event => { managementTrigger.current = event.currentTarget; setManagementView('account'); }}><UserRound size={16} />내 계정</Button>
       {canManageMembers(account) && <Button variant="ghost" className="member-nav-button" disabled={!!busy} aria-pressed={managementView === 'members'} onClick={event => { managementTrigger.current = event.currentTarget; setManagementView('members'); }}><Users size={16} />회원 관리</Button>}
-    </nav><div className="connection"><span className="studio-connection-status"><i className={connected && health?.ready ? 'online' : ''} />{connected ? health?.ready ? '스튜디오 연결됨' : '준비 상태 확인 중' : '재연결 중'}</span><Button variant="ghost" disabled={!!busy} onClick={() => {
+    </nav><div className="connection"><span className="studio-connection-status"><i className={connected ? 'online' : ''} />{connected ? '스튜디오 연결됨' : account ? '재연결 중' : '계정 확인 중…'}</span><Button variant="ghost" disabled={!!busy} onClick={() => {
       const revocation = revokeCurrentSession();
       resetAccount();
       const local = signOut().then(() => true, () => false);
@@ -561,9 +544,6 @@ export default function CommercialHome() {
         if (identity === sessionIdentity() && (!revoked || !signedOut)) setError('이 기기에서는 로그아웃했습니다. 서버나 로그인 제공자의 세션 종료는 확인하지 못했습니다.');
       });
     }}>로그아웃</Button></div></header>
-    {canOperate && helperInstallOpen && <LocalImportConnection key={sessionIdentity()} onClose={closeHelper}
-      onLoadCode={localImporter.readPairingCode} onConnect={connectLocal}
-      onUpload={() => { closeHelper(); setSourceMode('file'); }} />}
     {managementView && account && connectionOwner ? <MemberManagement key={`${connectionOwner.identity}:${connectionOwner.tenant_id}:${connectionOwner.subject}:${managementView}`}
       mode={managementView} identity={connectionOwner.identity} account={account} targets={catalog?.targets || []}
       connections={Object.values(savedConnections)} location={connectionStore?.location ?? streamConnectionLocation()} connectionError={connectionStorageError}
@@ -572,7 +552,7 @@ export default function CommercialHome() {
       onUseConnection={useSavedConnection} onRemoveConnection={deleteSavedConnection} onOwnConnectionRemovalStarted={ownConnectionRemovalStarted} onOwnConnectionDeleted={ownConnectionDeleted} onSessionRevoked={() => {
         resetAccount(); void signOut().catch(() => {});
       }} /> : <>
-    {!connected && <output className="message error studio-message">서버에 다시 연결하고 있습니다.<Button variant="ghost" onClick={() => void action('reconnect', async () => { await refresh(); })}>다시 연결</Button><Button variant="ghost" onClick={() => void action('login', signIn)}>다시 로그인</Button></output>}
+    {!connected && <output className="message error studio-message">{account ? '서버에 다시 연결하고 있습니다.' : '스튜디오 정보를 불러오고 있습니다.'}<Button variant="ghost" onClick={() => void action('reconnect', async () => { await refresh(); })}>다시 연결</Button><Button variant="ghost" onClick={() => void action('login', signIn)}>다시 로그인</Button></output>}
     {error && <p className="message error studio-message" role="alert">{error}</p>}{notice && <output className="message success studio-message"><Check size={17} />{notice}</output>}
     {canOperate && <>
     <div className="studio-intro" id="studio-top"><div><h1>새 방송 만들기</h1><p>영상 하나로, 여러 채널의 시청자를 만나세요.</p></div>{usage && <div className="studio-storage"><div><span>내 저장 공간</span><strong>{size(usage.storage_bytes)} <small>/ {size(usage.storage_limit_bytes)}</small></strong></div><meter min={0} max={usage.storage_limit_bytes} value={usage.storage_bytes} aria-label="저장 공간 사용량" /><span>{usage.storage_reserved_bytes > 0 ? `처리 중인 파일 ${size(usage.storage_reserved_bytes)} 포함` : '원본 영상과 방송 결과를 보관합니다.'}</span></div>}</div>
@@ -612,9 +592,9 @@ export default function CommercialHome() {
           </details>
           <Button type="submit" className="source-import-button" disabled={!canOperate || !!busy || !connected || !health || !sourcePlatform || !sourceUrl.trim() || importPending}>
             {busy === 'import' ? <LoaderCircle size={16} className="source-spinner" aria-hidden="true" /> : <Download size={16} aria-hidden="true" />}
-            {busy === 'import' ? localPhase === 'requesting' ? '가져오기 요청 중…' : localPhase === 'uploading' ? '내 컴퓨터에서 보관함에 업로드 중…' : localPhase === 'validating' ? '업로드 완료 확인 중…' : '내 컴퓨터에서 가져오는 중…' : importPending ? '영상 검사 중…' : '영상 가져오기'}
+            {busy === 'import' ? '가져오기 요청 중…' : importPending ? '영상 준비 중…' : '영상 가져오기'}
           </Button>
-          {busy === 'import' && <output className="local-import-progress"><span>이 창과 도우미를 켜두세요.</span><button type="button" onClick={() => localImportAbort.current?.abort(new DOMException('가져오기 취소', 'AbortError'))}>가져오기 취소</button></output>}
+
           {importFailure && <LocalImportFailure failure={importFailure} disabled={!!busy || !canOperate || !connected || importPending}
             onRetry={() => void importSource()} onUpload={() => { setSourceMode('file'); setImportFailure(null); }} />}
           {!sourceCatalog && <p className="hint failure">원본 플랫폼 목록을 불러오지 못했습니다.<button type="button" className="source-retry-link" disabled={!!busy} onClick={() => void action('reconnect', refresh)}>다시 불러오기</button></p>}

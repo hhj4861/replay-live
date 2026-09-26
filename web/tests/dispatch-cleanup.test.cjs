@@ -73,6 +73,7 @@ function fixture(mode = 'queue') {
   const dispatch = load('api/dispatch.ts', globals, {
     'node:crypto': crypto, 'node:net': net, '@vercel/sandbox': sdk,
     '../lib/worker-network-policy.js': load('lib/worker-network-policy.ts', {}, {}),
+    '../lib/proxy-alerts.js': load('lib/proxy-alerts.ts', globals, {}),
   }).default.fetch;
   const wake = load('lib/dispatch-wakeup.ts', globals, { '@vercel/queue': {
     send: async () => { calls.push({ operation: 'queue-send' }); },
