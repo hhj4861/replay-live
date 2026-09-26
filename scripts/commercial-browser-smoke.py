@@ -177,6 +177,7 @@ def main():
     parser.add_argument('--api-port', type=int, default=18090)
     parser.add_argument('--web-port', type=int, default=13100)
     parser.add_argument('--issuer-port', type=int, default=19443)
+    parser.add_argument('--server-import', action='store_true', help='Exercise server import queue with generated source fixture')
     parser.add_argument('--device-import', action='store_true', help='Exercise the PC daemon and direct cloud upload')
     parser.add_argument('--source-url', help='With --device-import, verify this actual YouTube source through preview only')
     parser.add_argument('--output', type=Path, default=ROOT / 'docs/commercial-browser-evidence-2026-09-10.json')
@@ -240,6 +241,16 @@ def main():
         subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=30',
             '-f', 'lavfi', '-i', 'sine=frequency=440', '-t', '15', '-c:v', 'libx264', '-preset', 'ultrafast',
             '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-movflags', '+faststart', str(sample)], check=True, timeout=45, capture_output=True)
+        if args.server_import:
+            import server.worker as worker_module
+            def synthetic_server_download(source, output, **limits):
+                if source != {'provider': 'direct', 'url': 'https://media.example/synthetic.mp4'}:
+                    raise ValueError('Unexpected server import source')
+                limits['check_active']()
+                output.write_bytes(sample.read_bytes())
+                return {'bytes': sample.stat().st_size, 'sha256': hashlib.sha256(sample.read_bytes()).hexdigest(), 'name': 'synthetic-browser.mp4'}
+            worker_module.download_source = synthetic_server_download
+            evidence['source_transport'] = 'generated source fixture; real import queue/worker/storage/playback; external download verified separately'
         if args.device_import:
             from server.local_import_daemon import LocalImports, create_local_import_app
             def synthetic_source(source, output, **limits):
@@ -280,17 +291,21 @@ def main():
             with httpx.Client(trust_env=False) as client:
                 while time.monotonic() < deadline:
                     try:
-                        if client.get(web).status_code == 200:
+                        response = client.get(web)
+                        evidence['preview_http_status'] = response.status_code
+                        if response.status_code == 200:
                             break
                     except httpx.HTTPError:
                         pass
                     time.sleep(.1)
                 else:
+                    evidence['preview_process_exit'] = process.poll()
+                    evidence['preview_startup_log'] = (scratch / 'preview.log').read_text()[-2000:]
                     raise RuntimeError('Vite preview did not become ready')
             browser_config = scratch / 'browser-config.json'
             browser_result = scratch / 'browser-result.json'
             browser_config.write_text(json.dumps({'api': api, 'web': web, 'issuer': issuer, 'sample': str(sample),
-                'download': str(scratch / 'download.flv'), 'result': str(browser_result), 'device_import': args.device_import,
+                'download': str(scratch / 'download.flv'), 'result': str(browser_result), 'device_import': args.device_import, 'server_import': args.server_import,
                 'source_url': args.source_url, 'screenshot': str(args.output.with_suffix('.png'))}))
             driver = 'device-import-browser-smoke.mjs' if args.device_import else 'commercial-browser-smoke.mjs'
             result = subprocess.run([node, str(ROOT / 'scripts' / driver), str(browser_config)],
@@ -321,6 +336,8 @@ def main():
     except Exception as error:
         evidence['passed'] = False
         evidence['failure_type'] = type(error).__name__
+        if isinstance(error, RuntimeError):
+            evidence['fixture_failure'] = str(error)
         evidence['failure_stage'] = evidence.get('stage', 'fixture_setup')
         evidence['issuer_checks'] = counters
         evidence['worker_results'] = worker_results

@@ -163,9 +163,12 @@ def run_job(job, *, client=None, workdir=None):
             imported = None
             lease.require_active()
             if job['target'] == 'import':
+                if (job.get('mode') == 'production' and job.get('source', {}).get('provider') == 'youtube'
+                        and not os.environ.get('REPLAY_SOURCE_PROXY_URL')):
+                    raise SourceImportError('SOURCE_PROXY_UNAVAILABLE')
                 imported = download_source(job.get('source'), source, max_bytes=output_budget,
                     max_duration=job['max_duration'], timeout=min(job['validation_timeout'], max(1, job['deadline'] - time.time())),
-                    check_active=lease.require_active)
+                    check_active=lease.require_active, proxy_url=os.environ.get('REPLAY_SOURCE_PROXY_URL'))
                 lease.require_active()
             else:
                 sha, size = hashlib.sha256(), 0

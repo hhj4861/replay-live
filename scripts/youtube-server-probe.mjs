@@ -17,6 +17,8 @@ if (!['iad1', 'icn1'].includes(region)) throw new Error('UNSUPPORTED_PROBE_REGIO
 const targeted = process.argv.includes('--pot-always-only');
 const wpcOnly = process.argv.includes('--wpc-only');
 const proxyOnly = process.argv.includes('--proxy-only');
+const productionTransport = process.argv.includes('--production-transport');
+if (productionTransport && !proxyOnly) throw new Error('Production transport requires --proxy-only');
 const verifyPlayback = process.argv.includes('--verify-playback');
 if (verifyPlayback && !proxyOnly) throw new Error('Playback verification requires --proxy-only');
 const standardOnly = process.argv.includes('--standard-only');
@@ -120,7 +122,7 @@ candidate/bin/python -c 'from playwright.sync_api import sync_playwright; p=sync
       if (wpc.exitCode !== 0) throw new Error('PROVIDER_SETUP_FAILED');
       await run('wpc');
     }
-  } else if (proxyOnly) await run('proxy');
+  } else if (proxyOnly) await run(productionTransport ? 'production-proxy' : 'proxy');
   else if (!targeted) await run('standard');
   if (!browserCandidates && !proxyOnly && !standardOnly && (targeted || !report.results.at(-1).ok)) {
     const provider = await sandbox.runCommand({cmd:'bash',args:['-c',`set -euo pipefail

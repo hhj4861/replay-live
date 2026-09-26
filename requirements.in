@@ -8,3 +8,4 @@ psycopg[binary]>=3.3.5,<4
 boto3>=1.43.90,<2
 PyJWT[crypto]>=2.13.0,<3
 yt-dlp==2026.8.19
+yt-dlp-ejs==0.8.0

@@ -434,7 +434,8 @@ function dispatchEnvironment({ target = 'local', runtimes = [], missingRuntime =
     } },
     console: { info: value => logs.push(value), error: value => logs.push(value) } },
     { 'node:crypto': require('node:crypto'), 'node:net': require('node:net'), '@vercel/sandbox': { Sandbox, APIError },
-      '../lib/worker-network-policy.js': load('lib/worker-network-policy.ts', {}, {}) });
+      '../lib/worker-network-policy.js': load('lib/worker-network-policy.ts', {}, {}),
+      '../lib/proxy-alerts.js': load('lib/proxy-alerts.ts', { AbortSignal, fetch }, {}) });
   const run = (authorization = 'Bearer ' + env.CRON_SECRET) => dispatcher.default.fetch(
     new Request('https://studio.example/api/dispatch', { headers: { Authorization: authorization } }));
   return { run, env, job, calls, created, files, commands, stopped, logs, deliveries, signalTimeouts, now: () => TestDate.now() };
@@ -698,4 +699,22 @@ test('slow cleanup is bounded so a backlog cannot starve new jobs', async () => 
   assert.equal((await env.run()).status, 200);
   assert.ok(env.calls.filter(value => value.sandboxGet).length < runtimes.length);
   assert.equal(env.created.length, 1);
+});
+
+
+test('only YouTube import workers receive the shared proxy secret in process env', async () => {
+  const env = dispatchEnvironment({ target: 'import' });
+  env.job.input = null; delete env.job.stream_destination;
+  env.job.source = { provider: 'youtube', url: 'https://youtu.be/GcOe4ILS6Ow' };
+  env.env.REPLAY_SOURCE_PROXY_URL = 'http://synthetic:secret@gw.dataimpulse.com:823';
+  assert.equal((await (await env.run()).json()).started, 1);
+  const launched = env.commands.find(command => command.detached);
+  assert.equal(launched.env.REPLAY_SOURCE_PROXY_URL, env.env.REPLAY_SOURCE_PROXY_URL);
+  assert.equal(JSON.stringify(env.created).includes('synthetic:secret'), false);
+  assert.equal(env.files.some(file => file.content.toString().includes('synthetic:secret')), false);
+  assert.equal(env.logs.join('').includes('synthetic:secret'), false);
+  const fileJob = dispatchEnvironment();
+  fileJob.env.REPLAY_SOURCE_PROXY_URL = env.env.REPLAY_SOURCE_PROXY_URL;
+  assert.equal((await (await fileJob.run()).json()).started, 1);
+  assert.equal(JSON.stringify(fileJob.commands).includes('synthetic:secret'), false);
 });

@@ -188,7 +188,7 @@ def verify_playback(media):
     """Play the downloaded MP4 to its end in the cloud's headless Chromium."""
     from playwright.sync_api import sync_playwright
     player = media.parent / 'player.html'
-    player.write_text('<!doctype html><video muted playsinline src="normalized.mp4"></video>')
+    player.write_text(f'<!doctype html><video muted playsinline src="{media.name}"></video>')
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         try:
@@ -223,12 +223,15 @@ def child(mode, video_id, directory):
     resources = ExitStack()
     proxy = None
     try:
-        if mode == 'baseline':
+        if mode in ('baseline', 'production-proxy'):
             from server.media_sources import download_source
             output = directory / 'baseline.mp4'
             result = download_source(dict(provider='youtube', url=video_url(video_id)), output,
-                                     max_bytes=LIMIT, max_duration=120, timeout=120, check_active=lambda: None)
+                                     max_bytes=LIMIT, max_duration=120, timeout=120, check_active=lambda: None,
+                                     proxy_url=os.environ.get('REPLAY_PROBE_PROXY_URL') if mode == 'production-proxy' else None)
             report.update(result, media=media_info(output))
+            if mode == 'production-proxy' and os.environ.get('REPLAY_PROBE_PLAYBACK') == '1':
+                report['browser_playback'] = verify_playback(output)
         else:
             from yt_dlp import YoutubeDL
             observe_engine(events)
@@ -351,7 +354,7 @@ def supervise(mode, video_id):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', choices=['baseline', 'standard', 'pot', 'pot-always', 'browser', 'impersonated', 'wpc', 'proxy'], required=True)
+    parser.add_argument('--mode', choices=['baseline', 'standard', 'pot', 'pot-always', 'browser', 'impersonated', 'wpc', 'proxy', 'production-proxy'], required=True)
     parser.add_argument('--video-id', required=True)
     parser.add_argument('--child', action='store_true')
     parser.add_argument('--directory')

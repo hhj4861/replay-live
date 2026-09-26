@@ -16,8 +16,8 @@ export default function SourceLinkHelp({ provider, note }: { provider: string; n
       </div>
       <p>공개 녹화 영상 한 편이나 HTTPS MP4 링크를 사용할 수 있어요. 생방송·재생목록은 지원하지 않아요.</p>
       {provider !== 'youtube' && note && <p>{note}</p>}
-      <div className="source-help-section"><h3>도우미는 언제 필요한가요?</h3>
-        <p>‘영상 가져오기’를 누르면 이 PC의 도우미에 연결해요. 연결할 수 없으면 설치·실행 안내가 열려요.</p>
+      <div className="source-help-section"><h3>영상은 어떻게 가져오나요?</h3>
+        <p>‘영상 가져오기’를 누르면 서버가 영상을 내려받아 내 보관함에 저장해요. 별도 프로그램을 설치할 필요가 없어요.</p>
       </div>
       <div className="source-help-section"><h3>가져오지 못한다면</h3>
         <p>{provider === 'youtube'

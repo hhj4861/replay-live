@@ -14,6 +14,7 @@ from server.access_policy import AccessPolicy
 from server.repository import Repository, metadata as repository_metadata
 from server.access_policy import metadata as access_metadata
 from server.operations import Operations, metadata as operations_metadata
+from server.proxy_quota import metadata as proxy_quota_metadata
 from server.google_auth import discard_restored_sessions, metadata as google_metadata
 from server.stream_connections import metadata as stream_connections_metadata
 from server.device_imports import metadata as device_imports_metadata
@@ -78,7 +79,7 @@ def database_identity(value):
 def summary(connection):
     """Only counts and hashed tenant identifiers, never media names or credentials."""
     names = set(inspect(connection).get_table_names())
-    tables = sorted(set(repository_metadata.tables) | set(access_metadata.tables) | set(operations_metadata.tables) | set(google_metadata.tables) | set(stream_connections_metadata.tables) | set(device_imports_metadata.tables))
+    tables = sorted(set(repository_metadata.tables) | set(access_metadata.tables) | set(operations_metadata.tables) | set(google_metadata.tables) | set(stream_connections_metadata.tables) | set(device_imports_metadata.tables) | set(proxy_quota_metadata.tables))
     missing = sorted(set(tables) - names)
     if missing:
         raise ValueError('Database migration is incomplete')
@@ -96,7 +97,7 @@ def summary(connection):
 
 def check_schema(connection):
     inspector = inspect(connection)
-    for meta in (repository_metadata, access_metadata, operations_metadata, google_metadata, stream_connections_metadata, device_imports_metadata):
+    for meta in (repository_metadata, access_metadata, operations_metadata, google_metadata, stream_connections_metadata, device_imports_metadata, proxy_quota_metadata):
         for table in meta.sorted_tables:
             actual = {column['name'] for column in inspector.get_columns(table.name)}
             if actual != set(table.columns.keys()):
@@ -129,6 +130,7 @@ def migrate(value, *, development=False):
             google_metadata.create_all(repo.engine)
             stream_connections_metadata.create_all(repo.engine)
             device_imports_metadata.create_all(repo.engine)
+            proxy_quota_metadata.create_all(repo.engine)
         with repo.engine.begin() as connection:
             if not repo.sqlite:
                 connection.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': LOCK_ID})
