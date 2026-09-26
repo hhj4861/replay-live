@@ -1,0 +1,73 @@
+{
+  "started_at": "2026-09-26T12:37:12.808Z",
+  "video_id": "GcOe4ILS6Ow",
+  "base_snapshot": "snap_m8p0jzazYZup2yKUp7iElS9aWlM2",
+  "production_changed": false,
+  "local_daemon_used": false,
+  "youtube_credentials_used": false,
+  "proxy_used": false,
+  "files": {
+    "scripts/youtube-server-probe.py": "abab5e1e2ba42a8ddf2ee255d2d470fb9c3f388441ce579ec00c37e336e413ee",
+    "server/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "server/media_sources.py": "799f61b56a4a95a25e29efd97cbc704e77abc190fe5e98f82443b063ef6674ca",
+    "server/media_runtime.py": "5e59f76125f6cc6a24c4e0221f88e6fbce640fa82948acce0788c159397be0d2",
+    "server/output_policy.py": "b7b33c14cc2c8ad94989f5939e6eb870b5df92c36d6bc5ddac38e09b1c9d817c"
+  },
+  "results": [
+    {
+      "ejs_observed": false,
+      "elapsed_ms": 1296,
+      "error": "BOT_CHECK_REQUIRED",
+      "exception_type": "SourceImportError",
+      "messages": [],
+      "mode": "baseline",
+      "ok": false,
+      "phase": "download",
+      "provider_seen": false,
+      "token_generated_observed": false,
+      "video_id": "GcOe4ILS6Ow",
+      "yt_dlp_version": "2026.8.19"
+    },
+    {
+      "ejs_observed": true,
+      "elapsed_ms": 1186,
+      "error": "BOT_CHECK_REQUIRED",
+      "exception_type": "DownloadError",
+      "messages": [
+        "BOT_CHECK_REQUIRED",
+        "TIMEOUT"
+      ],
+      "mode": "standard",
+      "ok": false,
+      "phase": "download",
+      "provider_seen": false,
+      "token_generated_observed": false,
+      "video_id": "GcOe4ILS6Ow",
+      "yt_dlp_version": "2026.8.19"
+    },
+    {
+      "ejs_observed": true,
+      "elapsed_ms": 2180,
+      "error": "BOT_CHECK_REQUIRED",
+      "exception_type": "DownloadError",
+      "messages": [
+        "BOT_CHECK_REQUIRED",
+        "TIMEOUT"
+      ],
+      "mode": "pot",
+      "ok": false,
+      "phase": "download",
+      "provider_seen": true,
+      "token_generated_observed": false,
+      "video_id": "GcOe4ILS6Ow",
+      "yt_dlp_version": "2026.8.19"
+    }
+  ],
+  "sandbox_name": "blush-wild-coral-Ba2V2f",
+  "setup_exit_code": 0,
+  "provider_setup_exit_code": 0,
+  "provider_commit": "37169ee2656e08c5c2e5dc9df4c598c0cb4c88a8",
+  "sandbox_stopped": true,
+  "finished_at": "2026-09-26T12:37:39.124Z",
+  "cloud_download_succeeded": false
+}
