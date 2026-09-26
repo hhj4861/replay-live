@@ -34,9 +34,45 @@
 .local-import-actions a:focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; }
 .local-import-actions a[aria-disabled="true"] { opacity: .5; pointer-events: none; }
 
-.helper-install-dialog { width: min(480px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow-y: auto; margin: auto; padding: 24px; border: 1px solid #d8e1e8; border-radius: 16px; background: #fff; color: #334155; box-shadow: 0 20px 60px #0f172a33; }
-.helper-install-dialog::backdrop { background: #0f172a88; }
-.helper-install-dialog h2 { margin: 0 0 12px; font-size: 20px; }
-.helper-install-dialog p, .helper-install-dialog output { display: block; margin: 12px 0; font-size: 14px; line-height: 1.7; }
-.helper-install-dialog select { display: block; width: 100%; padding: 8px; margin-top: 8px; border: 1px solid #cbd5e1; border-radius: 6px; }
-.helper-install-dialog [role="alert"] { color: #b42318; }
+.helper-install-dialog { width: min(440px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; margin: auto; padding: 28px; border: 1px solid #e2e7ef; border-radius: 20px; background: #fff; color: #18243d; box-shadow: 0 24px 80px #18243d30; font-family: inherit; }
+.helper-install-dialog::backdrop { background: #18243d80; backdrop-filter: blur(3px); }
+.helper-dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 20px; }
+.helper-dialog-icon { display: grid; place-items: center; width: 44px; height: 44px; background: #e8edfc; color: #3458d4; border-radius: 14px; }
+.helper-dialog-close { display: grid; place-items: center; width: 36px; height: 36px; margin: -8px -8px 0 0; color: #647187; border-radius: 8px; }
+.helper-dialog-close:hover { background: #f5f7fb; }
+.helper-install-dialog h2 { margin: 0 0 8px; font-size: 23px; font-weight: 700; line-height: 1.35; letter-spacing: -.7px; }
+.helper-install-dialog p, .helper-install-dialog output { font-size: 13px; line-height: 1.65; margin: 0; overflow-wrap: anywhere; }
+.helper-install-dialog #helper-install-description { color: #647187; font-size: 14px; }
+.helper-dialog-body { margin-top: 24px; }
+.helper-device { display: inline-flex; align-items: center; gap: 6px; color: #647187; font-size: 12px; margin-bottom: 16px; }
+.helper-connect-steps { display: grid; gap: 16px; list-style: none; margin: 0 0 20px; padding: 0; }
+.helper-connect-steps li { display: flex; align-items: flex-start; gap: 12px; color: #647187; }
+.helper-connect-steps li>span { display: grid; place-items: center; width: 24px; height: 24px; flex-shrink: 0; background: #f0f3f8; border-radius: 50%; font-size: 12px; font-weight: 600; }
+.helper-connect-steps strong { display: block; padding-top: 2px; font-size: 14px; font-weight: 500; }
+.helper-connect-steps .is-current { color: #18243d; }
+.helper-connect-steps .is-current>span { background: #3458d4; color: #fff; }
+.helper-connect-steps .is-current strong { font-weight: 650; }
+.helper-connect-steps .is-complete>span { background: #e4f3ed; color: #217957; }
+.helper-connect-steps p { color: #647187; margin-top: 4px; }
+.helper-install-dialog .helper-availability { color: #647187; background: #f5f7fb; border-radius: 8px; padding: 12px 14px; margin-bottom: 16px; }
+.helper-install-dialog .helper-dialog-error { margin-bottom: 16px; color: #a9382b; border-left: 2px solid #d99086; padding-left: 10px; }
+.helper-install-dialog .helper-dialog-status { display: flex; align-items: center; gap: 8px; margin: 0 0 16px; color: #3458d4; }
+.helper-dialog-status svg { flex-shrink: 0; }
+.helper-primary-action>button, .helper-primary-action>a:not(.helper-existing-link) { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 44px; padding: 10px 16px; border: 0; border-radius: 10px; background: #3458d4; color: #fff; font-size: 14px; font-weight: 600; text-decoration: none; }
+.helper-primary-action>button:hover:not(:disabled), .helper-primary-action>a:not(.helper-existing-link):hover { background: #2948b4; }
+.helper-primary-action>button:disabled { background: #edf1fa; color: #647187; opacity: 1; }
+.helper-primary-action .helper-existing-link { display: block; width: fit-content; margin: 10px auto 0; padding: 6px; color: #647187; font-size: 12px; text-underline-offset: 3px; }
+.helper-dialog-help { margin-top: 20px; font-size: 12px; color: #647187; }
+.helper-dialog-help summary { display: flex; align-items: center; gap: 6px; cursor: pointer; width: fit-content; min-height: 32px; list-style: none; }
+.helper-dialog-help summary::-webkit-details-marker { display: none; }
+.helper-dialog-help[open] summary { color: #3458d4; }
+.helper-dialog-help>div { margin-top: 8px; padding: 12px 14px; background: #f5f7fb; border-radius: 8px; }
+.helper-dialog-help button, .helper-dialog-footer button { min-height: 36px; color: #3458d4; text-decoration: underline; text-underline-offset: 3px; font-size: 12px; }
+.helper-dialog-help button+button { margin-left: 16px; }
+.helper-dialog-help button:disabled { color: #647187; text-decoration: none; }
+.helper-dialog-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; margin-top: 20px; padding-top: 16px; border-top: 1px solid #e2e7ef; color: #647187; font-size: 12px; }
+.helper-install-dialog :is(button,a,summary):focus-visible { outline: 3px solid #3458d4; outline-offset: 3px; }
+@media (max-width: 480px) { .helper-install-dialog { padding: 22px; } .helper-install-dialog h2 { font-size: 21px; } }
+@media (prefers-reduced-motion: reduce) { .helper-install-dialog .source-spinner { animation: none; } }
+
+.helper-dialog-footer>span { display: block; }

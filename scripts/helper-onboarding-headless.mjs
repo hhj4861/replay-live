@@ -28,7 +28,7 @@ const assets = [
   ['macOS Apple Silicon', 'macos-arm64'], ['macOS Intel', 'macos-x64'], ['Windows x64', 'windows-x64'],
 ].map(([label, suffix]) => ({ label, sha256: 'a'.repeat(64),
   url: `https://github.com/hhj4861/replay-live/releases/download/helper-v0.2.0/ReplayLiveHelper-0.2.0-${suffix}.zip` }));
-async function scenario({ name, os = 'macOS', arch = 'arm', label, published = true, online = false, unknown = false, mobile = false }) {
+async function scenario({ name, os = 'macOS', arch = 'arm', label, published = true, online = false, unknown = false, mobile = false, launchExisting = false }) {
   console.log('Checking ' + name);
   const context = await browser.newContext({ acceptDownloads: true, viewport: { width: 1280, height: 900 } });
   try {
@@ -79,7 +79,7 @@ async function scenario({ name, os = 'macOS', arch = 'arm', label, published = t
     }
     const trigger = page.getByRole('button', { name: '영상 가져오기', exact: true });
     await trigger.click();
-    const dialog = page.getByRole('dialog', { name: '링크 다운로드에 도우미가 필요해요' });
+    const dialog = page.locator('dialog[open]');
     await dialog.waitFor();
     await page.keyboard.press('Escape');
     await dialog.waitFor({ state: 'hidden' });
@@ -87,15 +87,49 @@ async function scenario({ name, os = 'macOS', arch = 'arm', label, published = t
     assert.equal(downloads.length, 0); assert.equal(assetRequests.length, 0);
     await trigger.click();
     await dialog.waitFor();
-    const confirm = dialog.getByRole('button', { name: '동의하고 설치 파일 다운로드', exact: true });
+    await dialog.locator('.helper-primary-action').waitFor();
+    assert.equal(await dialog.getByRole('button', { name: '취소', exact: true }).count(), 0);
+    assert.equal(await dialog.getByRole('button', { name: '다시 연결', exact: true }).isVisible(), false);
+    if (!mobile) {
+      await dialog.locator('summary').focus(); await page.keyboard.press('Enter');
+      assert.equal(await dialog.getByRole('button', { name: '다시 연결', exact: true }).isVisible(), true);
+      await dialog.locator('summary').click();
+    }
+    for (const [width, height] of [[1280, 900], [390, 844]]) {
+      await page.setViewportSize({ width, height });
+      const box = await dialog.boundingBox();
+      assert.ok(box.x >= 0 && box.x + box.width <= width + 1 && box.y >= 0 && box.y + box.height <= height + 1);
+      assert.equal(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth), true);
+      if (process.env.REPLAY_HELPER_SCREENSHOTS) {
+        await mkdir(process.env.REPLAY_HELPER_SCREENSHOTS, { recursive: true });
+        await dialog.screenshot({ animations: 'disabled', path: path.join(process.env.REPLAY_HELPER_SCREENSHOTS, `dialog-${name}-${width}.png`) });
+      }
+    }
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const confirm = dialog.getByRole('button', { name: '동의하고 다운로드', exact: true });
+    if (launchExisting) {
+      // Exercise the app-link handler without launching an installed OS app.
+      await page.evaluate(() => document.addEventListener('click', event => {
+        if (event.target.closest?.('a[href="replay-live-helper://start"]')) event.preventDefault();
+      }));
+      await dialog.getByRole('link', { name: '도우미 실행', exact: true }).click();
+      await dialog.getByText('도우미가 열리면 자동으로 연결돼요.', { exact: true }).waitFor();
+      assert.equal(await dialog.locator('.helper-primary-action button, .helper-primary-action a').count(), 0);
+      assert.equal(downloads.length, 0); assert.equal(assetRequests.length, 0);
+      online = true;
+      await page.getByText('연결됨', { exact: true }).waitFor();
+      await dialog.waitFor({ state: 'hidden' });
+      assert.deepEqual(errors, []);
+      checks.push(`${name}: one launch action waits and reconnects automatically without download`); return;
+    }
     if (!published || mobile || unknown) {
-      assert.equal(await confirm.isDisabled(), true);
-      await dialog.getByRole('button', { name: '취소', exact: true }).click();
+      assert.equal(await confirm.count(), 0);
+      await dialog.getByRole('button', { name: '도우미 연결 닫기', exact: true }).click();
       await dialog.waitFor({ state: 'hidden' });
       assert.equal(downloads.length, 0); assert.equal(assetRequests.length, 0);
       checks.push(`${name}: no unavailable/unsupported installer offered`);
     } else {
-      await dialog.getByText('설치 파일:', { exact: false }).filter({ hasText: label }).waitFor();
+      await dialog.getByText(label, { exact: true }).waitFor();
       assert.equal(await confirm.isEnabled(), true);
       const downloadReady = new Promise(resolve => { receiveDownload = resolve; });
       await confirm.click();
@@ -109,7 +143,7 @@ async function scenario({ name, os = 'macOS', arch = 'arm', label, published = t
       assert.deepEqual(await readFile(file), fixtureBytes);
       assert.deepEqual(assetRequests, [label]); assert.equal(downloads.length, 1);
       assert.equal(page.url(), origin + '/');
-      await dialog.getByText('다운로드를 요청했습니다.', { exact: false }).waitFor();
+      await dialog.getByText('설치 후 자동으로 연결돼요.', { exact: false }).waitFor();
       online = true; // Simulate helper becoming available after installation.
       await page.getByText('연결됨', { exact: true }).waitFor();
       await dialog.waitFor({ state: 'hidden' });
@@ -259,7 +293,7 @@ async function studioScenario() {
     await trigger.click(); await dialog.waitFor();
     await dialog.getByRole('alert').waitFor();
     assert.equal(await dialog.locator('input,select').count(), 0);
-    assert.equal(await dialog.getByRole('button', { name: '동의하고 설치 파일 다운로드', exact: true }).isDisabled(), true);
+    assert.equal(await dialog.getByRole('button', { name: '동의하고 다운로드', exact: true }).count(), 0);
     assert.equal(tickets().length, 0);
     await page.keyboard.press('Escape'); await dialog.waitFor({ state: 'hidden' });
     await trigger.waitFor();
@@ -269,7 +303,7 @@ async function studioScenario() {
     delayPair = new Promise(resolve => { releasePair = resolve; });
     const pairing = page.waitForRequest(request => request.url().endsWith(':17833/pair'));
     await trigger.click(); await pairing;
-    await dialog.getByRole('button', { name: '취소', exact: true }).click();
+    await dialog.getByRole('button', { name: '도우미 연결 닫기', exact: true }).click();
     const revoked = page.waitForRequest(request => request.url().endsWith(':17833/session') && request.method() === 'DELETE');
     releasePair(); delayPair = null; await revoked;
     assert.equal(tickets().length, 0);
@@ -277,7 +311,7 @@ async function studioScenario() {
     rejectPair = true; await trigger.click();
     await dialog.getByText('검증용 연결 거부', { exact: false }).waitFor();
     assert.equal(tickets().length, 0);
-    rejectPair = false; await dialog.getByRole('button', { name: '다시 연결', exact: true }).click();
+    rejectPair = false; await dialog.locator('summary').click(); await dialog.getByRole('button', { name: '다시 연결', exact: true }).click();
     await page.locator('.studio-selected-media').getByText('자동 가져온 영상.mp4', { exact: true }).waitFor();
     assert.equal(tickets().length, 1);
     assert.equal(tickets()[0].body.url, 'https://youtu.be/GcOe4ILS6Ow');
@@ -298,9 +332,9 @@ async function studioScenario() {
     published = true;
     await page.getByRole('button', { name: '영상 링크', exact: true }).click();
     await trigger.click(); await dialog.waitFor();
-    await dialog.getByText('설치 파일:', { exact: false }).waitFor();
+    await dialog.getByText('macOS Apple Silicon', { exact: true }).waitFor();
     const downloaded = context.waitForEvent('request', request => assets.some(item => item.url === request.url()));
-    await dialog.getByRole('button', { name: '동의하고 설치 파일 다운로드', exact: true }).click();
+    await dialog.getByRole('button', { name: '동의하고 다운로드', exact: true }).click();
     await downloaded; online = true;
     await dialog.waitFor({ state: 'hidden' });
     await page.getByText('영상이 준비됐습니다. 방송할 채널을 선택해 주세요.', { exact: true }).waitFor();
@@ -337,6 +371,7 @@ try {
   await scenario({ name: 'windows-x64', os: 'Windows', arch: 'x86', label: 'Windows x64' });
   await scenario({ name: 'unknown-mac', unknown: true, label: 'macOS Intel' });
   await scenario({ name: 'unpublished', published: false });
+  await scenario({ name: 'launch-installed', published: false, launchExisting: true });
   await scenario({ name: 'mobile', mobile: true });
   await scenario({ name: 'existing-helper', online: true });
   await studioScenario();
