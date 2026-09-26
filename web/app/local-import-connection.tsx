@@ -103,6 +103,7 @@ export default function LocalImportConnection({ onLoadCode, onConnect, onClose, 
             <li><span>2</span><div><strong>연결되면 영상 가져오기 시작</strong></div></li>
           </>}
         </ol>}
+        {selected && release?.development && <p className="helper-availability">개발용 설치 파일이에요. 서명되지 않아 OS에서 실행이 제한될 수 있어요.</p>}
         {!selected && !unsupported && <p className="helper-availability">{releaseError || (platform?.label ? '새 설치 파일은 준비 중이에요. 이미 설치했다면 바로 실행할 수 있어요.' : platform?.message)}</p>}
         {visibleError && !unsupported && <p className="helper-dialog-error" role="alert">{visibleError}</p>}
         <div className="helper-primary-action">

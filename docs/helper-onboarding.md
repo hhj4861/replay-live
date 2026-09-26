@@ -14,7 +14,7 @@
 
 **동의하고 설치 파일 다운로드**를 눌렀을 때만 다운로드를 요청한다. 브라우저 다운로드 완료나 설치 성공으로 표시하지 않는다. 내려받은 파일 열기와 OS 설치·실행 승인은 사용자가 해야 한다. 설치나 앱 실행 후 팝업이 5분 동안 연결을 재확인하고, 웹 복귀 시에도 확인한다. 시간 초과 시 다시 연결 버튼으로 재개할 수 있다. 자동 연결 후 원래 링크를 이어서 가져오므로 다시 제출할 필요가 없다. 설치 파일 미공개·연결 거부·자동 감지 불가 상태는 팝업 안에 표시하고 MP4 업로드로 전환할 수 있다.
 
-현재는 사용자 요청에 따라 서명 없는 개발 패키지만 준비한다. manifest는 null이며 자동 다운로드를 실제 운영에서 활성화하지 않는다. GitHub Actions의 만료되는 인증 필요 artifact 링크를 일반 사용자 자동 설치 주소로 사용하지 않는다.
+사용자 요청에 따라 서명 없는 개발 패키지 0.2.0을 [공개 prerelease](https://github.com/hhj4861/replay-live/releases/tag/helper-v0.2.0)에 게시했다. manifest는 인증 없이 받을 수 있는 세 플랫폼 파일과 검증한 SHA-256을 가리키며, `development: true`이면 동의 전에 서명되지 않은 개발용 파일임을 안내한다. 웹 다운로드 활성화는 이 manifest 변경의 PR 승인·머지 및 웹 배포 후 적용된다. GitHub Actions의 만료되는 인증 필요 artifact 링크를 일반 사용자 자동 설치 주소로 사용하지 않는다.
 
 브라우저 참고: [Client Hints](https://developer.chrome.com/docs/privacy-security/user-agent-client-hints), [download 속성의 한계](https://developer.mozilla.org/en-US/docs/Web/API/HTMLAnchorElement/download).
 
@@ -40,10 +40,10 @@ node scripts/helper-onboarding-headless.mjs
 일반 사용자 배포 전 해야 할 일:
 
 1. macOS Developer ID 서명/공증과 Windows 서명, 포함 FFmpeg 배포본의 라이선스·소스 제공을 확인한다. 개발 패키지로 Gatekeeper/SmartScreen 우회를 안내하지 않는다.
-2. 검증된 ZIP을 `helper-v0.2.0` GitHub Release에 게시한다. macOS/Windows 새 사용자 계정에서 설치 승인·거부, OS 재로그인, 프로토콜 실행, 제거를 검증한다.
-3. `web/public/helper-release.json`을 `{ "version": "0.2.0", "downloads": [{ "label": "macOS Apple Silicon", "url": "...", "sha256": "..." }] }`로 채운다. 각 플랫폼 빌드 JSON의 값을 사용하고 실제 공개 다운로드·체크섬을 확인한다. macOS Intel/Windows x64도 추가한다.
-4. 해당 PR 승인 머지 후 웹을 배포한다. 설치 파일이 공개되기 전에는 null manifest를 유지한다. 웹은 아직 준비 중임을 표시하며 존재하지 않는 설치 파일 링크를 제공하지 않는다.
+2. macOS/Windows 새 사용자 계정에서 설치 승인·거부, OS 재로그인, 프로토콜 실행, 제거를 검증한다. 공개 개발 패키지의 빌드·self-test·다운로드 검증 범위는 [0.2.0 릴리스 기록](releases/helper-0.2.0.md)을 참고한다. 이 검증을 실제 OS 설치 검증으로 간주하지 않는다.
+3. 후속 릴리스의 `web/public/helper-release.json`에는 각 공개 ZIP의 최종 SHA-256을 넣는다. 개발용이면 `development: true`를 유지한다. 라이선스 안내 등을 ZIP에 추가했다면 최종 파일 기준으로 JSON·체크섬을 다시 생성한다.
+4. 해당 PR 승인 머지 후 웹을 배포한다. 릴리스 취소 시 manifest를 null로 되돌리는 변경을 배포한다. 파일 공개와 운영 웹 활성화는 별도 단계다.
 
 현재 개발용 도우미가 17833 포트를 사용 중이면 먼저 그 도우미를 종료해야 한다. 설치기는 자신의 로컬 관리 키로 확인할 수 없는 프로세스를 종료하지 않는다. 관리 키는 사용자 전용 설정 폴더에만 저장되며 클라우드 키가 아니고 웹에 반환하지 않는다. 자동 시작 해제/제거에는 확인 창이 필요하다. 업로드 중 제거 시 작업 취소와 임시 파일 정리를 기다린다.
 
-이번 변경은 `server/media_runtime.py`를 포함하므로 운영 웹/API 반영 시 기존 릴리스 절차대로 FFmpeg worker snapshot과 REPLAY_VERSION을 함께 갱신해야 한다. 도우미만 업데이트하는 경우 클라우드 snapshot 변경은 필요하지 않다.
+`server/media_runtime.py` 등 worker 실행 코드 변경을 운영 API에 반영할 때는 기존 릴리스 절차대로 FFmpeg worker snapshot과 REPLAY_VERSION을 함께 갱신한다. 도우미나 웹 manifest만 업데이트하는 경우 클라우드 snapshot 변경은 필요하지 않다.

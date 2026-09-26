@@ -1,4 +1,4 @@
-// Visible-browser link import against isolated API/storage and a real local daemon.
+// Headless-by-default link import against isolated API/storage and a real local daemon.
 import fs from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
@@ -32,19 +32,21 @@ try {
   await page.locator('.connection').filter({ hasText: '스튜디오 연결됨' }).waitFor();
   evidence.stage = 'pairing';
   await page.getByRole('button', { name: '영상 링크', exact: true }).click();
-  await page.getByLabel('도우미 연결 코드', { exact: true }).fill('SYNTHETIC-BROWSER');
-  await page.getByRole('button', { name: '내 컴퓨터 연결', exact: true }).click();
-  await page.getByText('내 컴퓨터를 연결했습니다. 영상 링크를 입력해 주세요.', { exact: true }).waitFor();
-  evidence.checks.pc_pairing = true;
-  await page.getByLabel('원본 영상 플랫폼', { exact: true }).selectOption('youtube');
-  await page.getByLabel('녹화 영상 링크', { exact: true }).fill(cfg.source_url);
+  assert.equal(await page.locator('dialog[open]').count(), 0);
+  await page.getByLabel('원본 영상 플랫폼', { exact: true }).selectOption(cfg.source_url ? 'youtube' : 'direct');
+  await page.getByLabel('녹화 영상 링크', { exact: true }).fill(cfg.source_url || 'https://media.example/synthetic.mp4');
   await page.locator('.source-import-form .studio-optional-field summary').click();
   await page.locator('#source-name').fill('actual-pc-import.mp4');
   evidence.stage = 'cloud_task_pc_download_direct_upload';
   const created = page.waitForResponse(r => r.url() === cfg.api + '/api/device-imports' && r.status() === 201);
   const completed = page.waitForResponse(r => r.url().startsWith(cfg.api + '/api/device-imports/')
     && r.request().method() === 'GET' && r.status() === 200, { timeout: 180_000 });
+  const paired = page.waitForResponse(r => r.url() === 'http://127.0.0.1:17833/pair' && r.status() === 200);
+  const responses = Promise.all([paired, created, completed]);
+  responses.catch(() => {}); // Attach a handler while the UI click is pending.
   await page.getByRole('button', { name: '영상 가져오기', exact: true }).click();
+  await responses;
+  evidence.checks.automatic_pc_pairing_on_link_action = true;
   const id = (await (await created).json()).id;
   const result = await (await completed).json();
   assert.equal(result.state, 'completed');
