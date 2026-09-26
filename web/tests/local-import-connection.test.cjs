@@ -82,10 +82,11 @@ test('cancel immediately aborts discovery and prevents a late pair or retry', as
   env.button('다시 연결').props.onClick(); await flush();
   assert.equal(env.requests.length, 1); assert.equal(env.connections.length, 0); env.dispose();
 });
-const release = { version: '0.2.0', downloads: [{ label: 'macOS Apple Silicon', url: 'https://example.invalid/mac.zip', sha256: 'a'.repeat(64) }] };
+const release = { version: '0.2.0', development: true, downloads: [{ label: 'macOS Apple Silicon', url: 'https://example.invalid/mac.zip', sha256: 'a'.repeat(64) }] };
 test('only consent downloads the automatically selected package', async () => {
   const env = environment({ release }); await flush(); env.requests[0].reject(new Error('offline')); await flush();
   assert.equal(env.downloads.length, 0);
+  assert.match(text(env.render()), /서명되지 않아 OS에서 실행이 제한/);
   const confirm = env.button('동의하고 다운로드'); assert.ok(!confirm.props.disabled);
   confirm.props.onClick(); await flush();
   assert.equal(env.downloads.length, 1); assert.equal(env.downloads[0].label, 'macOS Apple Silicon');

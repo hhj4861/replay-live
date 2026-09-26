@@ -52,7 +52,7 @@ async function scenario({ name, os = 'macOS', arch = 'arm', label, published = t
         return route.fulfill({ status: 204, headers });
       }
       if (url.origin === origin && url.pathname === '/helper-release.json') {
-        return route.fulfill({ json: published ? { version: '0.2.0', downloads: assets } : { version: null, downloads: [] } });
+        return route.fulfill({ json: published ? { version: '0.2.0', development: true, downloads: assets } : { version: null, downloads: [] } });
       }
       const asset = assets.find(item => item.url === url.href);
       if (asset) {
@@ -130,6 +130,7 @@ async function scenario({ name, os = 'macOS', arch = 'arm', label, published = t
       checks.push(`${name}: no unavailable/unsupported installer offered`);
     } else {
       await dialog.getByText(label, { exact: true }).waitFor();
+      await dialog.getByText('개발용 설치 파일이에요.', { exact: false }).waitFor();
       assert.equal(await confirm.isEnabled(), true);
       const downloadReady = new Promise(resolve => { receiveDownload = resolve; });
       await confirm.click();
@@ -191,7 +192,7 @@ async function studioScenario() {
         }
         return route.fulfill({ status: 204, headers });
       }
-      if (url.origin === origin && url.pathname === '/helper-release.json') return route.fulfill({ json: published ? { version: '0.2.0', downloads: assets } : { version: null, downloads: [] } });
+      if (url.origin === origin && url.pathname === '/helper-release.json') return route.fulfill({ json: published ? { version: '0.2.0', development: true, downloads: assets } : { version: null, downloads: [] } });
       if (assets.some(item => item.url === url.href)) return route.fulfill({ contentType: 'application/octet-stream', headers: { 'Content-Disposition': 'attachment; filename=helper-fixture.zip' }, body: fixtureBytes });
       if (url.origin === origin && url.pathname.startsWith('/api/')) {
         if (request.method() !== 'GET') writes.push({ path: url.pathname, body: request.postDataJSON() });
