@@ -258,7 +258,7 @@ def main():
                 output.write_bytes(sample.read_bytes())
                 evidence['pc_source_download_calls'] = evidence.get('pc_source_download_calls', 0) + 1
                 return {'bytes': sample.stat().st_size, 'sha256': hashlib.sha256(sample.read_bytes()).hexdigest()}
-            local = LocalImports(root=scratch, pairing_code='SYNTHETIC-BROWSER', downloader=synthetic_source,
+            local = LocalImports(root=scratch, pairing_code='ABCDEF123456', downloader=synthetic_source,
                                  cloud_url=api, development=True)
             servers.append(start_server(create_local_import_app(origins=(web,), manager=local), 17833))
             logging.getLogger('replay.requests').disabled = True
@@ -292,17 +292,18 @@ def main():
             browser_config.write_text(json.dumps({'api': api, 'web': web, 'issuer': issuer, 'sample': str(sample),
                 'download': str(scratch / 'download.flv'), 'result': str(browser_result), 'device_import': args.device_import,
                 'source_url': args.source_url, 'screenshot': str(args.output.with_suffix('.png'))}))
-            driver = 'device-import-browser-smoke.mjs' if args.source_url else 'commercial-browser-smoke.mjs'
+            driver = 'device-import-browser-smoke.mjs' if args.device_import else 'commercial-browser-smoke.mjs'
             result = subprocess.run([node, str(ROOT / 'scripts' / driver), str(browser_config)],
                 cwd=ROOT, timeout=240, capture_output=True, text=True)
             if browser_result.exists():
                 evidence.update(json.loads(browser_result.read_text()))
             if result.returncode:
                 raise RuntimeError('Browser flow failed at ' + evidence.get('stage', 'unknown'))
-            if args.source_url:
-                if [item['target'] for item in worker_results] != ['validate'] or not evidence.get('pc_download'):
+            if args.device_import:
+                if [item['target'] for item in worker_results] != ['validate']:
                     raise RuntimeError('PC import did not use only the cloud validator')
-                if abs(evidence['preview']['duration'] - evidence['pc_download']['duration']) > .1:
+                source_duration = evidence['pc_download']['duration'] if args.source_url else 15
+                if abs(evidence['preview']['duration'] - source_duration) > .1:
                     raise RuntimeError('Source and cloud preview duration differ')
                 evidence.update(worker_results=worker_results, issuer_checks=counters, passed=True)
                 return 0

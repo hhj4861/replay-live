@@ -1,1 +1,21 @@
-{"version":null,"downloads":[]}
+{
+  "version": "0.2.0",
+  "development": true,
+  "downloads": [
+    {
+      "label": "macOS Apple Silicon",
+      "url": "https://github.com/hhj4861/replay-live/releases/download/helper-v0.2.0/ReplayLiveHelper-0.2.0-macos-arm64.zip",
+      "sha256": "bbad30d80978b21ded9205c61c21ce8b3bc92bfe697d3575cdc26dba558e9d37"
+    },
+    {
+      "label": "macOS Intel",
+      "url": "https://github.com/hhj4861/replay-live/releases/download/helper-v0.2.0/ReplayLiveHelper-0.2.0-macos-x64.zip",
+      "sha256": "316f80384a39fe40fcb9f04a6ccf71c699dd41e55303eddf174c7f8b4b0f060e"
+    },
+    {
+      "label": "Windows x64",
+      "url": "https://github.com/hhj4861/replay-live/releases/download/helper-v0.2.0/ReplayLiveHelper-0.2.0-windows-x64.zip",
+      "sha256": "98a55d46f4aea5e1601e78fb3caf8adef10acf77137adf07c8a396baac1b1af1"
+    }
+  ]
+}
