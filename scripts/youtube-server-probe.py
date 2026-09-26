@@ -4,7 +4,9 @@ Run inside a disposable, credential-free VM with public-only egress. Reports
 contain categories/metadata only, never cookies, tokens or signed media URLs.
 """
 import argparse
+from contextlib import ExitStack
 import hashlib
+from http.cookiejar import Cookie
 import importlib.metadata
 import json
 import math
@@ -16,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.parse import urlsplit
 
 LIMIT = 50 * 1024**2
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +28,20 @@ def video_url(video_id):
     if not re.fullmatch(r'[A-Za-z0-9_-]{11}', video_id):
         raise ValueError('INVALID_VIDEO_ID')
     return f'https://www.youtube.com/watch?v={video_id}'
+
+
+def configured_proxy():
+    value = os.environ.get('REPLAY_PROBE_PROXY_URL', '')
+    try:
+        parsed = urlsplit(value)
+        valid = (parsed.scheme == 'http' and parsed.hostname == 'gw.dataimpulse.com'
+                 and parsed.port == 823 and parsed.username and parsed.password
+                 and not parsed.query and not parsed.fragment and parsed.path in ('', '/'))
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ValueError('PROXY_CONFIGURATION_REQUIRED')
+    return value
 
 
 def category(message):
@@ -51,7 +68,7 @@ class SafeLogger:
 
     def debug(self, message):
         text = str(message).lower()
-        self.provider_seen |= 'bgutil' in text and 'provider' in text
+        self.provider_seen |= any(name in text for name in ('bgutil', 'wpc')) and 'provider' in text
         self.token_generated |= 'po token' in text and ('generated' in text or 'successfully' in text)
         self.ejs_seen |= '[jsc' in text and ('solving' in text or 'challenge' in text)
         code = category(text)
@@ -143,6 +160,30 @@ def observe_engine(events):
     JsChallengeProvider.bulk_solve = solve
 
 
+def browser_guest(video_id, events):
+    """An anonymous browser created in the cloud, never the user's profile."""
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            context = browser.new_context()
+            page = context.new_page()
+            page.goto(video_url(video_id), wait_until='domcontentloaded', timeout=45_000)
+            page.wait_for_timeout(5000)
+            state = page.evaluate('''() => {
+                const p = window.ytInitialPlayerResponse?.playabilityStatus;
+                const v = document.querySelector('video');
+                if (v) { v.muted = true; v.play().catch(() => {}); }
+                return {status: p?.status || 'UNKNOWN', video: !!v};
+            }''')
+            page.wait_for_timeout(3000)
+            events['browser_player_status'] = state['status'] if state['status'] in ('OK', 'LOGIN_REQUIRED', 'ERROR', 'UNPLAYABLE') else 'OTHER'
+            events['browser_playback_seconds'] = page.evaluate('() => document.querySelector("video")?.currentTime || 0')
+            return [c for c in context.cookies() if c['domain'].lstrip('.') in ('youtube.com', 'www.youtube.com')]
+        finally:
+            browser.close()
+
+
 def child(mode, video_id, directory):
     # Parent supervisor enforces a deadline and aggregate disk limit even when
     # a downloader, JS provider or FFmpeg is stuck outside a progress callback.
@@ -153,6 +194,8 @@ def child(mode, video_id, directory):
     events = dict(token_requests=0, tokens_returned=0, js_requests=0, js_responses_ok=0,
                   player_statuses=[], media_bytes_observed=0)
     start = time.monotonic()
+    resources = ExitStack()
+    proxy = None
     try:
         if mode == 'baseline':
             from server.media_sources import download_source
@@ -173,6 +216,24 @@ def child(mode, video_id, directory):
                 args['youtubepot-bgutilhttp'] = {'disable': ['true']}
                 if mode == 'pot-always':
                     args['youtube']['fetch_pot'] = ['always']
+            if mode == 'wpc':
+                # nodriver 0.50.3 expects a current event loop; Python 3.14 no
+                # longer creates one implicitly. Load explicitly to fail closed
+                # when the provider cannot import instead of testing without it.
+                import asyncio
+                asyncio.set_event_loop(asyncio.new_event_loop())
+                try:
+                    from yt_dlp.plugins import load_all_plugins
+                    load_all_plugins()
+                    provider = importlib.import_module('yt_dlp_plugins.extractor.getpot_wpc')
+                    if not hasattr(provider, 'WPCPTP'):
+                        raise ImportError('WPC_PROVIDER_UNAVAILABLE')
+                    events['wpc_imported'] = True
+                except Exception as error:
+                    events['wpc_import_error_type'] = type(error).__name__
+                    raise ValueError('PROVIDER_IMPORT_FAILED') from None
+                args = {'youtube': {'player_client': ['mweb'], 'fetch_pot': ['always']},
+                        'youtubepot-wpc': {'browser_path': [Path('/vercel/sandbox/browser-path.txt').read_text().strip()]}}
             options = dict(quiet=True, verbose=True, no_warnings=True, logger=logger, cachedir=False,
                            proxy='', cookiefile=None, cookiesfrombrowser=None, usenetrc=False,
                            noplaylist=True, retries=0, extractor_retries=0, fragment_retries=0, socket_timeout=10,
@@ -181,7 +242,21 @@ def child(mode, video_id, directory):
                            outtmpl=str(directory / 'source.%(ext)s'), max_filesize=LIMIT,
                            match_filter=reject_metadata, progress_hooks=[progress],
                            hls_prefer_native=True, concurrent_fragment_downloads=1)
+            if mode == 'proxy':
+                from probe_proxy_budget import BudgetProxy
+                proxy = resources.enter_context(BudgetProxy(configured_proxy()))
+                options['proxy'] = proxy.url
+                options['geo_verification_proxy'] = options['proxy']
+            if mode == 'impersonated':
+                from yt_dlp.networking.impersonate import ImpersonateTarget
+                options['impersonate'] = ImpersonateTarget.from_str('chrome')
+            guest_cookies = browser_guest(video_id, events) if mode == 'browser' else []
             with YoutubeDL(options) as downloader:
+                for cookie in guest_cookies:
+                    downloader.cookiejar.set_cookie(Cookie(0, cookie['name'], cookie['value'], None, False,
+                        cookie['domain'], True, cookie['domain'].startswith('.'), cookie['path'], True,
+                        cookie['secure'], int(cookie['expires']) if cookie['expires'] > 0 else None,
+                        cookie['expires'] <= 0, None, None, {}, False))
                 info = downloader.extract_info(video_url(video_id), download=True)
             rejection = reject_metadata(info or {})
             if rejection:
@@ -195,8 +270,17 @@ def child(mode, video_id, directory):
     except Exception as error:
         code = str(error)
         report['error'] = code if code in {'DURATION_LIMIT', 'LIVE_NOT_SUPPORTED', 'RESTRICTED_VIDEO', 'SIZE_LIMIT',
-                                         'NO_COMPLETE_MEDIA', 'INCOMPLETE_DOWNLOAD', 'INCOMPLETE_TRANSCODE', 'INVALID_STREAMS'} else category(error)
+                                         'NO_COMPLETE_MEDIA', 'INCOMPLETE_DOWNLOAD', 'INCOMPLETE_TRANSCODE', 'INVALID_STREAMS',
+                                         'PROVIDER_IMPORT_FAILED', 'PROXY_CONFIGURATION_REQUIRED'} else category(error)
         report['exception_type'] = type(error).__name__
+    finally:
+        if proxy:
+            events['proxy_bytes_counted'] = proxy.transferred
+            events['proxy_byte_limit'] = proxy.limit
+            events['proxy_budget_exhausted'] = proxy.exhausted.is_set()
+            if proxy.exhausted.is_set():
+                report.update(ok=False, error='PROXY_BYTE_LIMIT')
+        resources.close()
     report.update(elapsed_ms=round((time.monotonic() - start) * 1000), events=events,
                   messages=sorted(logger.categories), provider_seen=logger.provider_seen,
                   token_success_log_observed=logger.token_generated, ejs_log_observed=logger.ejs_seen)
@@ -237,7 +321,7 @@ def supervise(mode, video_id):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', choices=['baseline', 'standard', 'pot', 'pot-always'], required=True)
+    parser.add_argument('--mode', choices=['baseline', 'standard', 'pot', 'pot-always', 'browser', 'impersonated', 'wpc', 'proxy'], required=True)
     parser.add_argument('--video-id', required=True)
     parser.add_argument('--child', action='store_true')
     parser.add_argument('--directory')

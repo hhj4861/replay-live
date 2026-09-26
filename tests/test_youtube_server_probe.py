@@ -5,6 +5,7 @@ import unittest
 import shutil
 import subprocess
 import tempfile
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('probe', Path(__file__).resolve().parents[1] / 'scripts/youtube-server-probe.py')
 probe = importlib.util.module_from_spec(spec)
@@ -12,6 +13,16 @@ spec.loader.exec_module(probe)
 
 
 class ProbeGuards(unittest.TestCase):
+    def test_proxy_requires_explicit_expected_provider_without_leaking_value(self):
+        for value in ['', 'http://u:SECRET@localhost:823', 'http://u:SECRET@gw.dataimpulse.com:823/?token=x',
+                      'http://u:SECRET@gw.dataimpulse.com:bad']:
+            with patch.dict(probe.os.environ, {'REPLAY_PROBE_PROXY_URL': value}):
+                with self.assertRaisesRegex(ValueError, '^PROXY_CONFIGURATION_REQUIRED$'):
+                    probe.configured_proxy()
+        value = 'http://test-user:test-password@gw.dataimpulse.com:823'
+        with patch.dict(probe.os.environ, {'REPLAY_PROBE_PROXY_URL': value}):
+            self.assertEqual(probe.configured_proxy(), value)
+
     def test_only_canonical_video_id(self):
         self.assertEqual(probe.video_url('GcOe4ILS6Ow'), 'https://www.youtube.com/watch?v=GcOe4ILS6Ow')
         for value in ['https://localhost/', '../secret', 'GcOe4ILS6Ow\n', '-o /tmp/test']:
