@@ -222,6 +222,25 @@ test('stale deployment acknowledges the wakeup without dispatch, control claim o
   assert.deepEqual(f.calls.map(call => call.operation), ['live']);
 });
 
+test('enabled quota monitoring wakes an idle or distant queue within five minutes plus rounding', async () => {
+  for (const at of [null, 1_800_086_400]) {
+    const f = fixture({ REPLAY_PROXY_MONITOR_ENABLED: '1' });
+    f.state.at = at;
+    await f.helper.consumeDispatchWakeup({ v: 1 }, f.dispatch);
+    const scheduled = f.calls.at(-1);
+    assert.equal(scheduled.operation, 'send');
+    assert.equal(scheduled.options.delaySeconds, 330);
+  }
+  const f = fixture({ REPLAY_PROXY_MONITOR_ENABLED: '1' });
+  f.state.at = 1_800_000_030;
+  await f.helper.consumeDispatchWakeup({ v: 1 }, f.dispatch);
+  assert.equal(f.calls.at(-1).options.delaySeconds, 60, 'earlier media work still wins');
+  f.calls.length = 0;
+  f.state.health = { version: 'new-release' };
+  await f.helper.consumeDispatchWakeup({ v: 1 }, f.dispatch);
+  assert.deepEqual(f.calls.map(call => call.operation), ['live']);
+});
+
 test('malformed message cannot reach the API or dispatcher', async () => {
   const f = fixture();
   for (const message of [null, [], {}, true, { v: 2 }, { v: '1' }, { v: 1, job: 'synthetic-job' }]) {

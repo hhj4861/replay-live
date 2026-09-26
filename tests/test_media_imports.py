@@ -8,6 +8,8 @@ import uuid
 import pytest
 from sqlalchemy import select, update
 
+from test_commercial_api import commercial
+
 from server.repository import (Conflict, LeaseLost, NotFound, QuotaExceeded,
                                Repository, RepositoryError, jobs, media,
                                upload_reservations)
@@ -258,3 +260,29 @@ def test_api_import_authentication_catalog_and_boundaries(import_api):
     assert client.post('/api/media/imports', content=b' ' * 9000,
         headers={'Content-Type': 'application/json'}).status_code == 413
     assert repo.list_media('alpha') == []
+
+
+def test_fast_limits_do_not_probe_object_storage(commercial, monkeypatch):
+    client, _, storage = commercial
+    def unavailable():
+        raise AssertionError('Configuration must not contact object storage')
+    monkeypatch.setattr(storage, 'health', unavailable)
+    response = client.get('/api/limits')
+    assert response.status_code == 200
+    assert response.json()['max_duration_seconds'] == 60
+    assert 'ready' not in response.json()
+
+
+def test_production_imports_require_explicit_server_switch(import_api):
+    client, _, _ = import_api
+    # Exercise the admission switch without contacting a production database.
+    object.__setattr__(client.app.state.settings, 'mode', 'production')
+    source = {'provider': 'youtube', 'url': 'https://youtu.be/GcOe4ILS6Ow'}
+    response = client.post('/api/media/imports', json=source, headers={'Idempotency-Key': 'prod-switch-1'})
+    assert response.status_code == 503 and '도우미' not in response.text
+    object.__setattr__(client.app.state.settings, 'server_imports', True)
+    accepted = client.post('/api/media/imports', json=source, headers={'Idempotency-Key': 'prod-switch-1'})
+    assert accepted.status_code == 202
+    denied = client.post('/api/media/imports', json=source,
+        headers={'Authorization': 'Bearer viewer', 'Idempotency-Key': 'prod-switch-viewer'})
+    assert denied.status_code == 403

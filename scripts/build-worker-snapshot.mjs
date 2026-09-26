@@ -62,6 +62,8 @@ test "$(dpkg-query -W -f='\${Version}' ffmpeg)" = "$1"
 python3 -m venv .venv
 .venv/bin/pip install --no-cache-dir --disable-pip-version-check -r requirements.lock
 .venv/bin/pip check
+node --version
+.venv/bin/python -c 'import yt_dlp_ejs'
 .venv/bin/python - <<'PY'
 import hashlib,json,platform,subprocess
 from pathlib import Path

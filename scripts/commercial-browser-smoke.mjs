@@ -15,7 +15,7 @@ const context = await browser.newContext({ ignoreHTTPSErrors: true, acceptDownlo
 const page = await context.newPage();
 page.setDefaultTimeout(25_000);
 let currentToken = '', mediaId = '', jobId = '';
-let browserFileTransfers = 0, cloudSourceImports = 0;
+let browserFileTransfers = 0, cloudSourceImports = 0, helperRequests = 0;
 const tokens = new Set();
 page.on('pageerror', () => { evidence.javascript_errors++; });
 page.on('requestfailed', request => {
@@ -29,9 +29,10 @@ page.on('response', response => {
   }
 });
 page.on('request', request => {
-  if (cfg.device_import && ((request.url() === cfg.api + '/api/uploads' && request.method() === 'POST')
+  if ((cfg.device_import || cfg.server_import) && ((request.url() === cfg.api + '/api/uploads' && request.method() === 'POST')
       || new URL(request.url()).pathname.endsWith('/file')
       || (new URL(request.url()).pathname === '/api/storage/local' && request.method() === 'PUT'))) browserFileTransfers++;
+  if (request.url().includes('/api/device-imports') || new URL(request.url()).port === '17833') helperRequests++;
   if (request.url() === cfg.api + '/api/media/imports' && request.method() === 'POST') cloudSourceImports++;
   if (request.url().startsWith(cfg.api + '/api/')) {
     const authorization = request.headers().authorization;
@@ -44,14 +45,28 @@ await context.route('**/*', async route => {
   return route.continue();
 });
 
+let healthReleased = false;
+let releaseHealth;
+const healthGate = new Promise(resolve => { releaseHealth = resolve; });
+if (cfg.server_import) await page.route(cfg.api + '/api/health', async route => {
+  await healthGate; healthReleased = true; return route.continue();
+});
+
 try {
   evidence.browser_version = browser.version();
   evidence.stage = 'oidc_login';
   await page.goto(cfg.web);
+  const loginStarted = performance.now();
   await page.getByRole('button', { name: '계정으로 로그인', exact: true }).click();
   await page.getByRole('heading', { name: '새 방송 만들기', exact: true }).waitFor();
   await page.locator('.connection').filter({ hasText: '스튜디오 연결됨' }).waitFor();
   assert.ok(currentToken);
+  if (cfg.server_import) {
+    assert.equal(healthReleased, false);
+    evidence.checks.login_connected_without_waiting_for_storage_health = true;
+    evidence.login_to_connected_ms = Math.round(performance.now() - loginStarted);
+    releaseHealth();
+  }
   evidence.checks.real_oidc_redirect_login = true;
   evidence.stage = 'synthetic_401_real_refresh';
   const tokenBeforeRefresh = currentToken;
@@ -73,7 +88,21 @@ try {
   const tokenBeforeLogout = currentToken;
 
   evidence.stage = 'upload_and_validation';
-  if (cfg.device_import) {
+  if (cfg.server_import) {
+    evidence.stage = 'server_link_import';
+    await page.getByRole('button', { name: '영상 링크', exact: true }).click();
+    await page.getByLabel('원본 영상 플랫폼', { exact: true }).selectOption('direct');
+    await page.getByLabel('녹화 영상 링크', { exact: true }).fill('https://media.example/synthetic.mp4');
+    await page.locator('.studio-optional-field summary').click();
+    await page.locator('#source-name').fill('synthetic-browser.mp4');
+    const response = page.waitForResponse(r => r.url() === cfg.api + '/api/media/imports' && r.request().method() === 'POST');
+    await page.getByRole('button', { name: '영상 가져오기', exact: true }).click();
+    const imported = await response;
+    assert.equal(imported.status(), 202);
+    mediaId = (await imported.json()).media.id;
+    assert.equal(helperRequests, 0); assert.equal(browserFileTransfers, 0); assert.equal(cloudSourceImports, 1);
+    evidence.checks.server_import_without_helper_or_browser_file_transfer = true;
+  } else if (cfg.device_import) {
     evidence.stage = 'pc_link_import_and_direct_upload';
     await page.getByRole('button', { name: '영상 링크', exact: true }).click();
     await page.getByLabel('도우미 연결 코드', { exact: true }).fill('SYNTHETIC-BROWSER');
@@ -243,6 +272,7 @@ try {
   evidence.visible_error = (await page.locator('[role=alert]').allTextContents().catch(() => [])).join(' ').slice(0, 400);
   evidence.visible_heading = (await page.locator('h1').allTextContents().catch(() => [])).join(' ').slice(0, 100);
 } finally {
+  releaseHealth?.();
   await fs.writeFile(cfg.result, JSON.stringify(evidence, null, 2));
   await browser.close();
 }

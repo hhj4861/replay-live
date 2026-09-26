@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { isIP } from 'node:net';
 import { Sandbox, APIError, type NetworkPolicyRule } from '@vercel/sandbox';
 import { importNetworkPolicy } from '../lib/worker-network-policy.js';
+import { monitorProxyQuota } from '../lib/proxy-alerts.js';
 
 // Only this short control function holds cloud credentials. Media workers receive one lease.
 type Job = { id: string; lease_version: number; lease_seconds: number; deadline: number; callback_base: string; callback_token: string;
@@ -179,7 +180,11 @@ async function run(request: Request) {
         setupPhase = 'write'; phaseStartedAt = now();
         await sandbox.writeFiles([{ path: '/vercel/sandbox/replay/job.json', content: Buffer.from(JSON.stringify(job)) }], { signal: signalUntil(setupDeadline, 8_000) });
         setupPhase = 'launch'; phaseStartedAt = now();
-        await sandbox.runCommand({ cmd: 'bash', args: ['-c', 'set -euo pipefail\ncd /vercel/sandbox/replay\nchmod 600 job.json\nexec .venv/bin/python -m server.worker job.json'], detached: true, signal: signalUntil(setupDeadline, 8_000) });
+        const source = job.source as { provider?: string } | undefined;
+        const proxy = job.target === 'import' && source?.provider === 'youtube'
+          ? required('REPLAY_SOURCE_PROXY_URL') : undefined;
+        await sandbox.runCommand({ cmd: 'bash', args: ['-c', 'set -euo pipefail\ncd /vercel/sandbox/replay\nchmod 600 job.json\nexec .venv/bin/python -m server.worker job.json'],
+          env: proxy ? { REPLAY_SOURCE_PROXY_URL: proxy } : {}, detached: true, signal: signalUntil(setupDeadline, 8_000) });
         started += 1;
       } catch (error) {
         // Only fixed categories and correlation fields may leave this boundary.
@@ -236,6 +241,12 @@ async function run(request: Request) {
         }
       }
     } catch { deferred.add('monitoring'); }
+    if (process.env.REPLAY_PROXY_MONITOR_ENABLED === '1') {
+      try {
+        const deadline = Math.min(tickDeadline, now() + 25_000);
+        await monitorProxyQuota((path, body) => control(path, body, deadline, 4000), process.env);
+      } catch { deferred.add('proxy-alerts'); }
+    }
     console.info(JSON.stringify({ event: 'dispatch_tick', version, started, stopped, deferred: [...deferred], dispatch_unavailable: dispatchUnavailable }));
     // A persistent stop failure must retry this bounded queue message, rather
     // than publish a fresh message indefinitely and evade maxDeliveries.

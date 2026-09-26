@@ -1,0 +1,16 @@
+{
+  "provider": "DataImpulse personal Residential Proxy plan",
+  "api": "https://gw.dataimpulse.com:777/api/stats",
+  "documentation": "https://documenter.getpostman.com/view/7041120/2sAY4rGRZC",
+  "reader": "web/lib/proxy-alerts.ts:readProxyBalance",
+  "remaining_bytes": 5363037539,
+  "observed_at": 1790433701.355,
+  "validated_status_and_plan_identity": true,
+  "proxy_secret_saved": true,
+  "telegram_bot": "replay_proxy_account_bot",
+  "telegram_recipient_verified": true,
+  "telegram_test_message_sent": true,
+  "telegram_secrets_saved": true,
+  "production_monitoring_enabled": false,
+  "production_deployed": false
+}

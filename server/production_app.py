@@ -23,6 +23,7 @@ import jwt
 from starlette.concurrency import run_in_threadpool
 from .access_policy import AccessPolicy
 from .operations import Operations
+from .proxy_quota import ProxyQuota
 from .auth import AuthConfig, JWTAuthenticator, Principal
 from .google_auth import GoogleAuthConfig, GoogleAuthenticator
 from .member_management import MemberManagement
@@ -186,6 +187,8 @@ def create_production_app(settings=None, *, repository=None, storage=None, keys=
     app.state.repository, app.state.storage, app.state.settings = repo, objects, cfg
     app.state.access_policy = policy
     app.state.operations = operations
+    proxy_quota = ProxyQuota(repo.engine)
+    app.state.proxy_quota = proxy_quota
     stream_connections = StreamConnections(repo.engine, secrets, mode=cfg.mode)
     app.state.stream_connections = stream_connections
     members = MemberManagement(auth, repo) if isinstance(auth, GoogleAuthenticator) else None
@@ -378,6 +381,14 @@ def create_production_app(settings=None, *, repository=None, storage=None, keys=
                 'profile': members.profile(user) if members is not None else None,
                 'permissions': {'manage_members': members is not None and 'site_admin' in user.roles}}
 
+    @app.get('/api/limits')
+    def limits(user=Depends(principal)):
+        # Configuration is independent of storage probes and dispatcher wakeup.
+        return {'max_upload_mb': cfg.max_upload_bytes // 1024**2,
+                'max_duration_seconds': cfg.max_duration,
+                'max_concurrent': min(repo.tenant_concurrency, repo.global_concurrency),
+                'retention_days': cfg.retention_days}
+
     @app.post('/api/logout')
     async def logout(request: Request):
         if isinstance(auth, GoogleAuthenticator):
@@ -402,8 +413,8 @@ def create_production_app(settings=None, *, repository=None, storage=None, keys=
 
     @app.post('/api/media/imports', status_code=202)
     def import_media(payload: MediaImport, request: Request, user=Depends(writer)):
-        if cfg.mode == 'production':
-            raise HTTPException(409, '영상 링크는 내 컴퓨터의 도우미로 가져옵니다. 화면을 새로고침하고 도우미를 연결해 주세요.')
+        if cfg.mode == 'production' and not cfg.server_imports:
+            raise HTTPException(503, '서버 영상 가져오기를 준비 중입니다. 잠시 후 다시 시도하거나 MP4 파일을 업로드해 주세요.')
         policy.check(user, action='upload')
         if cfg.draining:
             raise HTTPException(503, '현재 점검 중입니다. 잠시 후 다시 시도하세요.')
@@ -688,6 +699,29 @@ def create_production_app(settings=None, *, repository=None, storage=None, keys=
     @app.post('/internal/alerts', dependencies=[Depends(control)])
     def alerts():
         return {'alerts': operations.pending_alerts(limit=10)}
+
+    class ProxyBalance(BaseModel):
+        remaining_bytes: int = Field(ge=0, le=10**15, strict=True)
+        observed_at: float
+
+    @app.post('/internal/proxy-balance', dependencies=[Depends(control)])
+    def observe_proxy_balance(payload: ProxyBalance):
+        try:
+            return {'alert_created': proxy_quota.observe(payload.remaining_bytes, payload.observed_at)}
+        except ValueError:
+            raise HTTPException(400, '유효한 최신 프록시 잔여량이 필요합니다.') from None
+
+    @app.post('/internal/proxy-alerts/claim', dependencies=[Depends(control)])
+    def claim_proxy_alert():
+        return {'alert': proxy_quota.claim()}
+
+    class ProxyAlertAck(BaseModel):
+        id: str = Field(pattern=r'^[a-f0-9]{32}$')
+        lease_token: str = Field(pattern=r'^[a-f0-9]{32}$')
+
+    @app.post('/internal/proxy-alerts/ack', dependencies=[Depends(control)])
+    def ack_proxy_alert(payload: ProxyAlertAck):
+        return {'acknowledged': proxy_quota.acknowledge(payload.id, payload.lease_token)}
 
     @app.post('/internal/alerts/{alert_id}/ack', dependencies=[Depends(control)])
     def acknowledge_alert(alert_id: str):
