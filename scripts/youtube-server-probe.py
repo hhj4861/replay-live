@@ -184,6 +184,32 @@ def browser_guest(video_id, events):
             browser.close()
 
 
+def verify_playback(media):
+    """Play the downloaded MP4 to its end in the cloud's headless Chromium."""
+    from playwright.sync_api import sync_playwright
+    player = media.parent / 'player.html'
+    player.write_text('<!doctype html><video muted playsinline src="normalized.mp4"></video>')
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.goto(player.as_uri())
+            page.evaluate('() => document.querySelector("video").play()')
+            page.wait_for_function('() => document.querySelector("video").ended', timeout=140_000)
+            result = page.evaluate('''() => {
+                const v = document.querySelector('video');
+                return {ended:v.ended, current_time:v.currentTime, duration:v.duration,
+                        decoded_frames:v.getVideoPlaybackQuality().totalVideoFrames,
+                        error_code:v.error?.code || null};
+            }''')
+            if (not result['ended'] or result['error_code'] or result['decoded_frames'] <= 0
+                    or abs(result['duration'] - result['current_time']) > .25):
+                raise ValueError('BROWSER_PLAYBACK_FAILED')
+            return result
+        finally:
+            browser.close()
+
+
 def child(mode, video_id, directory):
     # Parent supervisor enforces a deadline and aggregate disk limit even when
     # a downloader, JS provider or FFmpeg is stuck outside a progress callback.
@@ -266,12 +292,16 @@ def child(mode, video_id, directory):
                 raise ValueError('NO_COMPLETE_MEDIA')
             report['phase'] = 'normalize'
             report.update(normalize(files[0], directory / 'normalized.mp4', info['duration']))
+            if mode == 'proxy' and os.environ.get('REPLAY_PROBE_PLAYBACK') == '1':
+                report['phase'] = 'browser_playback'
+                report['browser_playback'] = verify_playback(directory / 'normalized.mp4')
         report.update(ok=True, phase='complete')
     except Exception as error:
         code = str(error)
         report['error'] = code if code in {'DURATION_LIMIT', 'LIVE_NOT_SUPPORTED', 'RESTRICTED_VIDEO', 'SIZE_LIMIT',
                                          'NO_COMPLETE_MEDIA', 'INCOMPLETE_DOWNLOAD', 'INCOMPLETE_TRANSCODE', 'INVALID_STREAMS',
-                                         'PROVIDER_IMPORT_FAILED', 'PROXY_CONFIGURATION_REQUIRED'} else category(error)
+                                         'PROVIDER_IMPORT_FAILED', 'PROXY_CONFIGURATION_REQUIRED',
+                                         'BROWSER_PLAYBACK_FAILED'} else category(error)
         report['exception_type'] = type(error).__name__
     finally:
         if proxy:

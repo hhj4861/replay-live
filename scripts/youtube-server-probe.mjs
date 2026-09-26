@@ -17,6 +17,8 @@ if (!['iad1', 'icn1'].includes(region)) throw new Error('UNSUPPORTED_PROBE_REGIO
 const targeted = process.argv.includes('--pot-always-only');
 const wpcOnly = process.argv.includes('--wpc-only');
 const proxyOnly = process.argv.includes('--proxy-only');
+const verifyPlayback = process.argv.includes('--verify-playback');
+if (verifyPlayback && !proxyOnly) throw new Error('Playback verification requires --proxy-only');
 const standardOnly = process.argv.includes('--standard-only');
 const browserCandidates = process.argv.includes('--browser-candidates') || wpcOnly;
 if ([targeted, proxyOnly, browserCandidates, standardOnly].filter(Boolean).length > 1) throw new Error('Choose one candidate group');
@@ -46,6 +48,7 @@ const sources = ['scripts/youtube-server-probe.py', 'scripts/probe_proxy_budget.
 const payload = await Promise.all(sources.map(async file => ({path: `/vercel/sandbox/replay/${file}`, content: await readFile(path.join(root, file))})));
 const report = {started_at: new Date().toISOString(), video_id: videoId, base_snapshot: snapshotId, region_requested: region,
   production_changed: false, local_daemon_used: false, youtube_credentials_used: false, proxy_used: proxyOnly,
+  browser_playback_requested: verifyPlayback,
   files: Object.fromEntries(payload.map(f => [f.path.split('/replay/')[1], createHash('sha256').update(f.content).digest('hex')])), results: []};
 await writeFile(output, '', {flag:'wx', mode:0o600});
 let sandbox;
@@ -76,13 +79,21 @@ command -v ffmpeg
 `],timeoutMs:180_000});
   report.setup_exit_code = setup.exitCode;
   if (setup.exitCode !== 0) throw new Error('CANDIDATE_SETUP_FAILED');
+  if (verifyPlayback) {
+    const playerSetup = await sandbox.runCommand({cmd:'bash',args:['-c',`set -euo pipefail
+/vercel/sandbox/candidate/bin/pip install --disable-pip-version-check playwright==1.63.0
+/vercel/sandbox/candidate/bin/playwright install --with-deps chromium
+`],timeoutMs:240_000});
+    report.playback_setup_exit_code = playerSetup.exitCode;
+    if (playerSetup.exitCode !== 0) throw new Error('CANDIDATE_SETUP_FAILED');
+  }
   const run = async mode => {
     const args = ['/vercel/sandbox/candidate/bin/python', '/vercel/sandbox/replay/scripts/youtube-server-probe.py',
       '--mode',mode,'--video-id',videoId];
     const command = await sandbox.runCommand(mode === 'wpc'
       ? {cmd:'xvfb-run', args:['-a',...args], timeoutMs:250_000}
       : {cmd:args[0],args:args.slice(1),timeoutMs:250_000,
-         env: proxyOnly ? {REPLAY_PROBE_PROXY_URL: proxyUrl} : {}});
+         env: proxyOnly ? {REPLAY_PROBE_PROXY_URL: proxyUrl, REPLAY_PROBE_PLAYBACK:verifyPlayback ? '1' : '0'} : {}});
     if (command.exitCode !== 0) throw new Error('PROBE_COMMAND_FAILED');
     const result = JSON.parse(await command.stdout());
     report.results.push(result);
