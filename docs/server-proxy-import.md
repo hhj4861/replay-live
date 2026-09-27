@@ -1,9 +1,12 @@
 # Shared server imports and proxy quota notifications
 
-Status: implemented on `feat/server-youtube-probe`; not merged or deployed to production.
-The official personal-plan balance API and the intended Telegram bot/recipient
-were verified. A real test message was delivered and server secrets were saved;
-monitoring is not enabled on the current production deployment.
+Status: merged through develop to main and deployed on 2026-09-27 as
+`rpl-7c8e6734883c2d03`. The production headless test imported the supplied YouTube
+video through the server proxy, stored it in R2 and played it to the end without
+a PC helper. Production balance monitoring is enabled and repeated observations
+were verified. The intended Telegram bot/recipient and an actual test delivery
+were verified previously. See [production verification](server-proxy-production-2026-09-27.md)
+for measured results, temporary-session cleanup and the Google OAuth test boundary.
 
 ## User flow
 

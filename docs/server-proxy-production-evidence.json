@@ -1,0 +1,96 @@
+{
+  "headless": true,
+  "production": true,
+  "auth_mode": "approved_ten_minute_application_session",
+  "google_oauth_exchange_retested": false,
+  "stage": "complete",
+  "helper_requests": 0,
+  "browser_file_uploads": 0,
+  "javascript_errors": 0,
+  "server_import_requests": 1,
+  "http_failures": [
+    {
+      "path": "/api/health",
+      "status": 503
+    }
+  ],
+  "session_to_connected_ms": 3167,
+  "connected_without_storage_health": true,
+  "import_status": 202,
+  "import_to_ready_ms": 28245,
+  "media_bytes": 760024,
+  "duration": 17.024,
+  "media_host": "replay-live-storage.guswhd1085.workers.dev",
+  "playback": {
+    "ended": true,
+    "duration": 17.024,
+    "width": 360,
+    "height": 640,
+    "decoded_frames": 509,
+    "error": null
+  },
+  "reload_to_connected_ms": 792,
+  "passed": true,
+  "temporary_session_revoked": true,
+  "revoked_session_http_status": 401,
+  "proxy_balance": [
+    {
+      "remaining_bytes": 5357396365,
+      "observed_at": 1790476140.786,
+      "low_fired": false,
+      "critical_fired": false
+    }
+  ],
+  "proxy_alert_count": 0,
+  "checked_at": 1790476173.22123,
+  "version": "rpl-7c8e6734883c2d03",
+  "runtime_followup": {
+    "checked_at": 1790476392.404916,
+    "runtime": [
+      {
+        "state": "completed",
+        "lease_version": 1,
+        "cleaned": true,
+        "updated": 1790476128.354222
+      }
+    ],
+    "balance": [
+      {
+        "remaining_bytes": 5357396365,
+        "observed_at": 1790476291.331,
+        "low_fired": false,
+        "critical_fired": false
+      }
+    ],
+    "workers": [
+      {
+        "age_seconds": 101.0,
+        "metadata": {
+          "draining": false,
+          "role": "dispatcher",
+          "version": "rpl-7c8e6734883c2d03"
+        }
+      }
+    ],
+    "sandbox_status": "stopped"
+  },
+  "anonymous_browser": {
+    "headless": true,
+    "production": true,
+    "authenticated": false,
+    "errors": 0,
+    "helper_requests": 0,
+    "status": 200,
+    "google_login_visible": true,
+    "live": {
+      "status": "alive",
+      "version": "rpl-7c8e6734883c2d03"
+    },
+    "anonymous_limits_status": 401,
+    "passed": true
+  },
+  "release_commit": "7c8e6734883c2d03f7b53f97df0824851e1c3106",
+  "production_web": "https://replay-live-poc.vercel.app",
+  "production_api": "https://replay-live-api.vercel.app",
+  "worker_snapshot": "snap_k7S0ux2EWnlKKFssK4c6KHv5aWqm"
+}
