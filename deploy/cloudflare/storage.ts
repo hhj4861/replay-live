@@ -10,7 +10,7 @@ export type StorageEnv = {
 type Grant = { v: 1; operation: 'GET' | 'PUT' | 'MULTIPART'; key: string; until: number;
   size?: number; sha256?: string; type?: string; filename?: string; uploadId?: string; stagingKey?: string };
 const encoder = new TextEncoder();
-const maximum = 5 * 1024 ** 3;
+const maximum = 5 * 1024 ** 3 - 5 * 1024 ** 2;
 const partSize = 32 * 1024 ** 2;
 const singlePutMaximum = 64 * 1024 ** 2;
 const keyPattern = /^replay\/[a-f0-9]{64}\/(media|outputs)\/[A-Za-z0-9_-]{1,128}\.(mp4|flv)$/;

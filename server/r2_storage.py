@@ -15,8 +15,8 @@ from .storage import StorageError
 
 class R2Storage(VercelBlobStorage):
     # Large objects use bounded multipart requests below the ingress ceiling.
-    max_put_bytes = 5 * 1024**3
-    max_supported_put_bytes = 5 * 1024**3
+    max_put_bytes = 5 * 1024**3 - 5 * 1024**2
+    max_supported_put_bytes = max_put_bytes
 
     def __init__(self, control_url, control_token, *, client=None, prefix='replay', clock=time.monotonic):
         super().__init__(control_url, control_token, client=client, prefix=prefix, max_put_bytes=self.max_put_bytes)

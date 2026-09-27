@@ -19,7 +19,8 @@ The operator requested removal of both the two-minute duration limit and the
 - These are recording-admission settings, not unlimited compute or storage.
   Account quotas, finite download/validation deadlines, leases, daily runtime
   budgets and broadcast/output capacity remain enforced. The R2 adapter supports
-  objects up to its technical 5 GiB single-copy ceiling; the current account
+  objects up to its technical 5 GiB minus 5 MiB single-copy ceiling
+  ([R2 limits](https://developers.cloudflare.com/r2/platform/limits/)); the current account
   quota is much smaller. Existing optional PC helpers keep their own legacy
   transfer limits; the primary server import route does not use them.
 

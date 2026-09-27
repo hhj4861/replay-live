@@ -96,7 +96,7 @@ class Settings:
                         or bridge.port not in (None, 443) or bridge.query or bridge.fragment
                         or bridge.path != '/api/blob-control'):
                     raise ValueError('Object storage requires an HTTPS control endpoint')
-                limit = 5 * 1024 if self.storage_provider == 'cloudflare-r2' else 128
+                limit = 5 * 1024 - 5 if self.storage_provider == 'cloudflare-r2' else 128
                 upload_limit = limit if self.storage_provider == 'cloudflare-r2' else 50
                 if self.max_upload_bytes > upload_limit * 1024**2 or self.max_output_bytes > limit * 1024**2:
                     raise ValueError('Object upload/output limits exceed the supported adapter limits')
