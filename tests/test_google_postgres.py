@@ -80,6 +80,25 @@ async def login(service, key):
     return await service.exchange(credential(key, challenge), challenge['challenge_id'], challenge['challenge_secret'])
 
 
+def test_postgres_read_authentication_does_not_wait_for_mutation_locks(google_pg):
+    services, key = google_pg
+    first, second = services
+    session = asyncio.run(login(first, key))
+    authorization = 'Bearer ' + session['token']
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with first.engine.begin() as connection:
+            connection.execute(select(identities.c.subject).with_for_update()).all()
+            # Keep a mutation lock held on another connection/thread. A read
+            # must see the committed account without waiting for that lock.
+            with first._lock:
+                principal = pool.submit(first._authenticate, authorization, None).result(timeout=5)
+                assert principal.has_role('operator')
+    second.logout(authorization)
+    with pytest.raises(HTTPException) as revoked:
+        asyncio.run(first.authenticate(authorization))
+    assert revoked.value.status_code == 401
+
+
 def test_postgres_challenge_and_refresh_each_have_one_winner_across_services(google_pg):
     services, key = google_pg
     first, second = services
