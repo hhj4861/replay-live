@@ -170,7 +170,7 @@ def _metadata(path, *, timeout=30, should_stop=None):
         raise MediaError('MEDIA_INVALID', '읽을 수 없는 영상 파일입니다.') from None
 
 
-def validate_media(path, *, validation_timeout=300, allow_portrait=False, should_stop=None):
+def validate_media(path, *, validation_timeout=300, allow_portrait=False, should_stop=None, max_duration=14400):
     if not shutil.which('ffprobe') or not shutil.which('ffmpeg'):
         raise MediaError('MEDIA_INVALID', 'FFmpeg와 ffprobe를 먼저 설치하세요.')
     validation_deadline = time.monotonic() + validation_timeout
@@ -189,11 +189,11 @@ def validate_media(path, *, validation_timeout=300, allow_portrait=False, should
             raise ValueError()
         dimensions_valid = (0 < min(width, height) <= 1080 and max(width, height) <= 1920
                             and width % 2 == 0 and height % 2 == 0)
-        if not math.isfinite(duration) or not 1 <= duration <= 14400 or not 0 < fps <= 60 or not dimensions_valid or (not allow_portrait and width < height):
+        if not math.isfinite(duration) or duration < 1 or (max_duration and duration > max_duration) or not 0 < fps <= 60 or not dimensions_valid or (not allow_portrait and width < height):
             raise ValueError()
     except (KeyError, ValueError, TypeError, ZeroDivisionError):
         orientation = '가로·세로' if allow_portrait else '가로'
-        raise MediaError('MEDIA_INVALID', f'1초~4시간, 최대 {orientation} 1080p/60fps, H.264(yuv420p)+AAC MP4를 사용하세요.') from None
+        raise MediaError('MEDIA_INVALID', f'유효한 재생 시간, 최대 {orientation} 1080p/60fps, H.264(yuv420p)+AAC MP4를 사용하세요.') from None
     command = ['ffmpeg', '-hide_banner', '-nostdin', '-loglevel', 'error', '-xerror', '-err_detect', 'explode',
                '-threads', '2', '-protocol_whitelist', 'file,pipe', '-i', str(path), '-map', '0:v:0', '-map', '0:a:0',
                '-progress', 'pipe:1', '-nostats', '-f', 'null', '-']

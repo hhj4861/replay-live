@@ -19,7 +19,7 @@ def test_r2_production_configuration_and_output_limit():
                    dispatch_mode='cloudflare', max_output_bytes=64 * 1024**2)
     assert cfg.storage_provider == 'cloudflare-r2'
     with pytest.raises(ValueError):
-        settings(storage_provider='cloudflare-r2', blob_control_url=CONTROL, max_output_bytes=64 * 1024**2 + 1)
+        settings(storage_provider='cloudflare-r2', blob_control_url=CONTROL, max_output_bytes=5 * 1024**3 + 1)
 
 
 def test_r2_grants_pin_origin_path_method_headers_and_expiry():

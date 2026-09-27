@@ -59,6 +59,7 @@ def _decoded_path(value):
 
 class VercelBlobStorage(_Keys):
     max_put_bytes = MAX_BLOB_PUT_BYTES
+    max_supported_put_bytes = MAX_BLOB_PUT_BYTES
 
     def __init__(self, control_url, control_token, *, max_put_bytes=MAX_BLOB_PUT_BYTES,
                  client=None, prefix='replay'):
@@ -72,7 +73,7 @@ class VercelBlobStorage(_Keys):
         if (not isinstance(control_token, str) or not 32 <= len(control_token) <= 4096
                 or any(ord(char) < 33 or ord(char) > 126 for char in control_token)):
             raise StorageError('Private storage control authorization is required')
-        if isinstance(max_put_bytes, bool) or not isinstance(max_put_bytes, int) or not 1 <= max_put_bytes <= MAX_BLOB_PUT_BYTES:
+        if isinstance(max_put_bytes, bool) or not isinstance(max_put_bytes, int) or not 1 <= max_put_bytes <= self.max_supported_put_bytes:
             raise StorageError('Invalid private storage upload limit')
         self.control_url = control_url
         self._control_token = control_token
