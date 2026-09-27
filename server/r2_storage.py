@@ -14,8 +14,9 @@ from .storage import StorageError
 
 
 class R2Storage(VercelBlobStorage):
-    # Stay below Cloudflare's 100 MB HTTP request ceiling, including output.
-    max_put_bytes = 64 * 1024**2
+    # Large objects use bounded multipart requests below the ingress ceiling.
+    max_put_bytes = 5 * 1024**3 - 5 * 1024**2
+    max_supported_put_bytes = max_put_bytes
 
     def __init__(self, control_url, control_token, *, client=None, prefix='replay', clock=time.monotonic):
         super().__init__(control_url, control_token, client=client, prefix=prefix, max_put_bytes=self.max_put_bytes)
@@ -44,8 +45,15 @@ class R2Storage(VercelBlobStorage):
         clean = {'Content-Type': content_type, 'Content-Length': str(size)} if method == 'PUT' else {}
         if value['headers'] != clean:
             raise StorageError('R2 transfer constraints do not match')
+        multipart = value.get('multipart')
+        if multipart is not None and (method != 'PUT' or not isinstance(multipart, dict)
+                or set(multipart) != {'part_size'} or multipart['part_size'] != 32 * 1024**2):
+            raise StorageError('Invalid R2 multipart authorization')
+        if method == 'PUT' and size > 64 * 1024**2 and multipart is None:
+            raise StorageError('Large R2 upload requires multipart authorization')
         return {'url': value['url'], 'method': method, 'headers': clean, 'expires_in': value['expires_in'],
-                **({'object_key': key} if method == 'PUT' else {})}
+                **({'object_key': key} if method == 'PUT' else {}),
+                **({'multipart': multipart} if multipart is not None else {})}
 
     def health(self):
         # Concurrent browser polls share a bounded successful probe, not a GET

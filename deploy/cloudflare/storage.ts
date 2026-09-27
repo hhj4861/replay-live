@@ -7,10 +7,12 @@ export type StorageEnv = {
   REPLAY_PUBLIC_URL: string;
   REPLAY_ORIGINS: string;
 };
-type Grant = { v: 1; operation: 'GET' | 'PUT'; key: string; until: number;
-  size?: number; sha256?: string; type?: string; filename?: string };
+type Grant = { v: 1; operation: 'GET' | 'PUT' | 'MULTIPART'; key: string; until: number;
+  size?: number; sha256?: string; type?: string; filename?: string; uploadId?: string; stagingKey?: string };
 const encoder = new TextEncoder();
-const maximum = 64 * 1024 ** 2;
+const maximum = 5 * 1024 ** 3 - 5 * 1024 ** 2;
+const partSize = 32 * 1024 ** 2;
+const singlePutMaximum = 64 * 1024 ** 2;
 const keyPattern = /^replay\/[a-f0-9]{64}\/(media|outputs)\/[A-Za-z0-9_-]{1,128}\.(mp4|flv)$/;
 const hashPattern = /^[a-f0-9]{64}$/;
 const mimeTypes = new Set(['video/mp4', 'video/x-flv', 'application/octet-stream']);
@@ -40,7 +42,7 @@ function integer(value: unknown, limit: number): number {
   return value as number;
 }
 function shape(size: unknown, sha256: unknown, type: unknown, key: string) {
-  const bytes = integer(size, key.includes('/media/') ? 50 * 1024 ** 2 : maximum);
+  const bytes = integer(size, maximum);
   if (typeof sha256 !== 'string' || !hashPattern.test(sha256) || typeof type !== 'string' || !mimeTypes.has(type)) return reject();
   return { size: bytes, sha256, type };
 }
@@ -54,7 +56,7 @@ async function scopedKey(tenant: unknown, key: unknown) {
 function json(value: unknown, status = 200, additional: Record<string, string> = {}) {
   return Response.json(value, { status, headers: { 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', ...additional } });
 }
-async function body(request: Request): Promise<Record<string, unknown>> {
+async function body(request: Request, maximumBytes = 16384): Promise<Record<string, unknown>> {
   if (request.headers.get('content-type')?.split(';')[0] !== 'application/json' || !request.body) return reject();
   const reader = request.body.getReader();
   const timer = setTimeout(() => { void reader.cancel(); }, 5000);
@@ -65,7 +67,7 @@ async function body(request: Request): Promise<Record<string, unknown>> {
       const next = await reader.read();
       if (next.done) break;
       length += next.value.byteLength;
-      if (length > 16384) return reject();
+      if (length > maximumBytes) return reject();
       content += decoder.decode(next.value, { stream: true });
     }
     content += decoder.decode();
@@ -88,9 +90,16 @@ async function grant(request: Request, env: StorageEnv): Promise<Grant> {
       || !await crypto.subtle.verify('HMAC', await hmac(env.REPLAY_OBJECT_KEY), decode(signature), encoder.encode(payload))) return reject(403, 'INVALID_GRANT');
   const value = JSON.parse(new TextDecoder().decode(decode(payload))) as Grant;
   if (value.v !== 1 || !keyPattern.test(value.key) || url.pathname !== `/objects/${value.key}`
-      || request.method !== value.operation || !Number.isSafeInteger(value.until)
+      || (value.operation === 'MULTIPART' ? !['PUT', 'POST', 'DELETE'].includes(request.method) : request.method !== value.operation) || !Number.isSafeInteger(value.until)
       || value.until <= Date.now() || value.until > Date.now() + 900_000) return reject(403, 'INVALID_GRANT');
-  if (value.operation === 'PUT') shape(value.size, value.sha256, value.type, value.key);
+  if (value.operation === 'PUT' || value.operation === 'MULTIPART') {
+    shape(value.size, value.sha256, value.type, value.key);
+    if (value.operation === 'PUT' && value.size! > singlePutMaximum) return reject(403, 'INVALID_GRANT');
+    if (value.operation === 'MULTIPART' && (value.size! <= singlePutMaximum || typeof value.uploadId !== 'string'
+        || !value.uploadId || value.uploadId.length > 2048 || typeof value.stagingKey !== 'string'
+        || !value.stagingKey.startsWith(value.key + '.upload-')
+        || !/^[a-f0-9]{32}$/.test(value.stagingKey.slice((value.key + '.upload-').length)))) return reject(403, 'INVALID_GRANT');
+  }
   else if (value.operation !== 'GET') return reject(403, 'INVALID_GRANT');
   return value;
 }
@@ -113,6 +122,16 @@ export async function storageControl(request: Request, env: StorageEnv): Promise
     if (input.operation === 'upload') {
       const constrained = shape(input.size, input.sha256, input.content_type ?? 'video/mp4', key);
       const expires = integer(input.expires ?? 900, 900);
+      if (constrained.size > singlePutMaximum) {
+        // Only the authenticated control plane allocates an upload. Public
+        // capabilities can neither create new uploads nor change their scope.
+        const stagingKey = key + '.upload-' + crypto.randomUUID().replaceAll('-', '');
+        const upload = await env.MEDIA.createMultipartUpload(stagingKey, { httpMetadata: { contentType: constrained.type } });
+        return json({ url: await signed(env, { v: 1, operation: 'MULTIPART', key, stagingKey,
+          uploadId: upload.uploadId, until: Date.now() + expires * 1000, ...constrained }),
+          method: 'PUT', headers: { 'Content-Type': constrained.type, 'Content-Length': String(constrained.size) },
+          expires_in: expires, object_key: key, multipart: { part_size: partSize } });
+      }
       return json({ url: await signed(env, { v: 1, operation: 'PUT', key, until: Date.now() + expires * 1000, ...constrained }),
         method: 'PUT', headers: { 'Content-Type': constrained.type, 'Content-Length': String(constrained.size) },
         expires_in: expires, object_key: key });
@@ -144,9 +163,52 @@ export async function storageObject(request: Request, env: StorageEnv): Promise<
     cors['Access-Control-Expose-Headers'] = 'Content-Length,Content-Range,ETag,Accept-Ranges';
   }
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: { ...cors,
-    'Access-Control-Allow-Methods': 'GET,PUT,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type,If-Match,Range', 'Access-Control-Max-Age': '600' } });
+    'Access-Control-Allow-Methods': 'GET,PUT,POST,DELETE,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type,If-Match,Range,X-Replay-Part', 'Access-Control-Max-Age': '600' } });
   try {
     const value = await grant(request, env);
+    if (value.operation === 'MULTIPART') {
+      const upload = env.MEDIA.resumeMultipartUpload(value.stagingKey!, value.uploadId!);
+      if (request.method === 'DELETE') {
+        await upload.abort(); await env.MEDIA.delete(value.stagingKey!);
+        return json({ aborted: true }, 200, cors);
+      }
+      if (request.method === 'PUT') {
+        const number = integer(Number(request.headers.get('x-replay-part')), Math.ceil(value.size! / partSize));
+        const size = Math.min(partSize, value.size! - (number - 1) * partSize);
+        if (request.headers.get('content-length') !== String(size) || request.headers.get('content-type') !== value.type || !request.body) return reject(409, 'INTEGRITY_MISMATCH');
+        const stream = new FixedLengthStream(size);
+        const cancel = new AbortController();
+        const copying = request.body.pipeTo(stream.writable, { signal: AbortSignal.any([cancel.signal, request.signal, AbortSignal.timeout(90_000)]) });
+        void copying.catch(() => {});
+        try {
+          const part = await upload.uploadPart(number, stream.readable); await copying;
+          return json({ partNumber: part.partNumber, etag: part.etag }, 200, cors);
+        } finally { cancel.abort(); await copying.catch(() => {}); }
+      }
+      const existing = await env.MEDIA.head(value.key);
+      if (existing) {
+        const found = metadata(existing, value.key);
+        if (found.bytes !== value.size || found.sha256 !== value.sha256 || found.content_type !== value.type) return reject(409, 'INTEGRITY_MISMATCH');
+        // Lost completion replies are safe to retry without overwriting media.
+        return json({ uploaded: true }, 200, cors);
+      }
+      const input = await body(request, 128 * 1024);
+      const parts = input.parts as R2UploadedPart[];
+      if (!Array.isArray(parts) || parts.length !== Math.ceil(value.size! / partSize)
+          || parts.some((p, i) => !p || p.partNumber !== i + 1 || typeof p.etag !== 'string' || !p.etag || p.etag.length > 512)) return reject();
+      try {
+        const staged = await upload.complete(parts);
+        if (staged.size !== value.size) return reject(409, 'INTEGRITY_MISMATCH');
+        const object = await env.MEDIA.get(value.stagingKey!);
+        if (!object || !('body' in object)) return reject(409, 'INTEGRITY_MISMATCH');
+        // Multipart ETags are not whole-file checksums. Stream into the final
+        // immutable object with R2's full SHA-256 verification before admission.
+        const committed = await env.MEDIA.put(value.key, object.body, { onlyIf: { etagDoesNotMatch: '*' },
+          sha256: value.sha256, httpMetadata: { contentType: value.type } });
+        if (!committed) return reject(409, 'INTEGRITY_MISMATCH');
+        return json({ uploaded: true }, 200, cors);
+      } finally { await env.MEDIA.delete(value.stagingKey!); }
+    }
     if (value.operation === 'PUT') {
       if (request.headers.get('content-length') !== String(value.size) || request.headers.get('content-type') !== value.type || !request.body) return reject(409, 'INTEGRITY_MISMATCH');
       const stream = new FixedLengthStream(value.size!);

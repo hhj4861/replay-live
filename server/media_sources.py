@@ -686,7 +686,7 @@ def _recording(info, max_duration):
     if info.get('duration') is not None:
         try:
             duration = float(info['duration'])
-            if not math.isfinite(duration) or not 0 < duration <= max_duration:
+            if not math.isfinite(duration) or duration <= 0 or (max_duration and duration > max_duration):
                 raise ValueError()
         except (ValueError, TypeError):
             raise SourceImportError('SOURCE_DURATION_EXCEEDED') from None
@@ -753,7 +753,7 @@ def _hls_segments(url, transport, headers, max_duration):
                 if not math.isfinite(value) or value <= 0 or pending_duration:
                     raise ValueError()
                 duration += value
-                if duration > max_duration:
+                if max_duration and duration > max_duration:
                     raise SourceImportError('SOURCE_DURATION_EXCEEDED')
                 pending_duration = True
             except (ValueError, IndexError) as error:
@@ -803,7 +803,7 @@ def _download_format(fmt, path, transport, max_duration):
                 if not math.isfinite(value) or value <= 0:
                     raise SourceImportError('SOURCE_FORMAT_UNSUPPORTED')
                 declared_duration += value
-                if declared_duration > max_duration:
+                if max_duration and declared_duration > max_duration:
                     raise SourceImportError('SOURCE_DURATION_EXCEEDED')
         duration = declared_duration or None
     else:
@@ -855,7 +855,7 @@ def _probe(path, budget, max_duration):
     try:
         info = json.loads(payload)
         duration = float(info['format']['duration'])
-        if not math.isfinite(duration) or not 0 < duration <= max_duration:
+        if not math.isfinite(duration) or duration <= 0 or (max_duration and duration > max_duration):
             raise SourceImportError('SOURCE_DURATION_EXCEEDED')
         return {'streams': info['streams'], 'duration': duration}
     except (KeyError, ValueError, TypeError) as error:
@@ -915,7 +915,7 @@ def download_source(source, output: Path, *, max_bytes: int, max_duration: float
     """Create one local H.264/AAC MP4, or remove partial files and raise a safe code."""
     if (not isinstance(source, dict) or isinstance(max_bytes, bool) or not isinstance(max_bytes, int)
             or not 0 < max_bytes <= 100 * 1024 ** 3
-            or not isinstance(max_duration, (int, float)) or not math.isfinite(max_duration) or not 0 < max_duration <= 14400
+            or not isinstance(max_duration, (int, float)) or not math.isfinite(max_duration) or not 0 <= max_duration <= 14400
             or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or not 0 < timeout <= 14400
             or not callable(check_active)):
         raise SourceImportError('SOURCE_LIMIT_INVALID')

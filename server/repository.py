@@ -366,7 +366,7 @@ class Repository:
 
     @staticmethod
     def _media_metadata(duration, width, height, fps):
-        _number(duration, 'duration', 1, 4 * 3600)
+        _number(duration, 'duration', 1)
         _number(width, 'width', 1, 1920)
         _number(height, 'height', 1, 1920)
         _number(fps, 'fps', 0.01, 60)

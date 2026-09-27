@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 import hashlib
 import hmac
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -432,7 +433,7 @@ def create_production_app(settings=None, *, repository=None, storage=None, keys=
         result = repo.create_import(user.tenant_id, id=identifier, name=name,
             object_key=objects.key(user.tenant_id, identifier), secret_ciphertext=ciphertext,
             idempotency_key=idem, request_fingerprint=fingerprint,
-            max_bytes=min(cfg.max_upload_bytes, objects.max_put_bytes))
+            max_bytes=min(cfg.max_upload_bytes or cfg.max_storage_bytes, objects.max_put_bytes))
         notify_dispatch(required=True)
         return {'media': public_media(result['media']), 'job': public_job(result['job'])}
 
@@ -441,7 +442,7 @@ def create_production_app(settings=None, *, repository=None, storage=None, keys=
         policy.check(user, action='upload')
         if cfg.draining:
             raise HTTPException(503, '현재 점검 중입니다. 잠시 후 다시 시도하세요.')
-        if payload.bytes > cfg.max_upload_bytes or not payload.name.lower().endswith('.mp4'):
+        if (cfg.max_upload_bytes and payload.bytes > cfg.max_upload_bytes) or not payload.name.lower().endswith('.mp4'):
             raise HTTPException(413, '허용된 크기의 MP4 파일을 선택하세요.')
         identifier = uuid.uuid4().hex
         key = objects.key(user.tenant_id, identifier)
@@ -683,7 +684,7 @@ def create_production_app(settings=None, *, repository=None, storage=None, keys=
         if row['target'] in PROCESSING_TARGETS and payload.state == 'completed':
             info = payload.metadata or {}
             duration = info.get('duration')
-            if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not 0 < duration <= cfg.max_duration:
+            if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0 or (cfg.max_duration and duration > cfg.max_duration):
                 raise HTTPException(400, '허용된 영상 길이가 아닙니다.')
         completed = repo.finish(job_id, claims['lease_token'], state=payload.state, error_code=payload.error_code,
                            progress=payload.progress, output_key=output_key, output_bytes=payload.output_bytes or 0,
