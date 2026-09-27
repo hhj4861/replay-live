@@ -59,6 +59,7 @@ class Settings:
     reservation_grace: int = 120
     worker_max_seconds: int = 5 * 3600
     draining: bool = False
+    server_imports: bool = False
 
     def __post_init__(self):
         object.__setattr__(self, 'database_url', normalize_database_url(self.database_url))
@@ -129,4 +130,5 @@ class Settings:
                 values[key] = int(os.environ['REPLAY_' + key.upper()])
         values['origins'] = tuple(o.strip() for o in os.getenv('REPLAY_ORIGINS', '').split(',') if o.strip())
         values['draining'] = os.getenv('REPLAY_DRAINING') == '1'
+        values['server_imports'] = os.getenv('REPLAY_SERVER_IMPORTS') == '1'
         return cls(**values)

@@ -98,9 +98,12 @@ export async function consumeDispatchWakeup(message: unknown, dispatch: (request
     const next: unknown = await upcoming.json();
     if (!next || typeof next !== 'object' || Array.isArray(next) || !Object.hasOwn(next, 'at')) throw unavailable();
     const at = (next as { at: unknown }).at;
-    if (at === null) return;
-    if (typeof at !== 'number' || !Number.isFinite(at) || at < 0 || at > Number.MAX_SAFE_INTEGER / 1000) throw unavailable();
-    await publishDispatchWakeup(at);
+    if (at !== null && (typeof at !== 'number' || !Number.isFinite(at) || at < 0 || at > Number.MAX_SAFE_INTEGER / 1000)) throw unavailable();
+    // Keep administrator quota monitoring alive even when no media job remains.
+    // The existing version fence and queue key also apply to these wakeups.
+    const monitorAt = process.env.REPLAY_PROXY_MONITOR_ENABLED === '1' ? Date.now() / 1000 + 300 : null;
+    const nextAt = at === null ? monitorAt : monitorAt === null ? at : Math.min(at, monitorAt);
+    if (nextAt !== null) await publishDispatchWakeup(nextAt);
   } catch {
     // Callback errors are logged by the SDK. Never retain upstream error bodies,
     // fetch URLs, response objects, or secret-bearing causes in the thrown error.

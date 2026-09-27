@@ -1,0 +1,125 @@
+{
+  "checked_at": "2026-09-26T14:20:34.991079+00:00",
+  "passed": true,
+  "scope": "actual local Chrome, synthetic HTTPS OIDC with real PKCE/RS256, development API/SQLite/local objects/HTTP worker",
+  "live_idp_verified": false,
+  "cloud_verified": false,
+  "youtube_started": false,
+  "tls_exception": "self-signed temporary issuer certificate; browser ignores TLS errors only in this fixture",
+  "source_transport": "generated source fixture; real import queue/worker/storage/playback; external download verified separately",
+  "preview_http_status": 200,
+  "stage": "completed",
+  "checks": {
+    "login_connected_without_waiting_for_storage_health": true,
+    "real_oidc_redirect_login": true,
+    "synthetic_401_triggered_real_oidc_refresh_and_retry": true,
+    "server_import_without_helper_or_browser_file_transfer": true,
+    "direct_upload_validated_and_playable_preview": true,
+    "output_reservation_quote_visible": true,
+    "network_outage_kept_login_and_reconnected": true,
+    "lost_commit_response_retry_reused_same_job": true,
+    "ambiguous_retry_allowed_after_quota_reserved": true,
+    "local_ffmpeg_completed_and_downloaded": true,
+    "output_reservation_settled_to_actual_bytes": true,
+    "second_new_job_rejected_before_worker": true,
+    "logout_revoked_old_token": true,
+    "relogin_same_tenant_preserved_media_and_completed_job": true
+  },
+  "javascript_errors": 0,
+  "headless": true,
+  "browser_version": "153.0.8010.54",
+  "login_to_connected_ms": 270,
+  "http_failures": [
+    {
+      "path": "http://127.0.0.1:18190/api/usage",
+      "status": 401
+    },
+    {
+      "path": "http://127.0.0.1:18190/api/broadcasts",
+      "status": 409
+    }
+  ],
+  "injected_usage_401": 1,
+  "output_quote": {
+    "estimated_output_bytes": 14161652,
+    "storage_available_bytes": 17197406,
+    "can_create": true
+  },
+  "request_failures": [
+    {
+      "path": "http://127.0.0.1:18190/api/storage/local",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "path": "http://127.0.0.1:18190/api/me",
+      "error": "net::ERR_INTERNET_DISCONNECTED"
+    },
+    {
+      "path": "http://127.0.0.1:18190/api/broadcasts",
+      "error": "net::ERR_FAILED"
+    },
+    {
+      "path": "http://127.0.0.1:18190/api/storage/local",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "path": "http://127.0.0.1:18190/api/logout",
+      "error": "net::ERR_ABORTED"
+    },
+    {
+      "path": "http://127.0.0.1:18190/api/storage/local",
+      "error": "net::ERR_ABORTED"
+    }
+  ],
+  "reserved_usage": {
+    "storage_bytes": 17935766,
+    "storage_reserved_bytes": 14161652,
+    "storage_limit_bytes": 20971520,
+    "storage_available_bytes": 3035754
+  },
+  "create_attempts": 2,
+  "created_jobs": 1,
+  "settled_usage": {
+    "storage_bytes": 12045187,
+    "storage_reserved_bytes": 0,
+    "storage_limit_bytes": 20971520,
+    "storage_available_bytes": 8926333
+  },
+  "quota_rejection": {
+    "status": 409,
+    "code": "OUTPUT_STORAGE_QUOTA_EXCEEDED",
+    "jobs_after": 1
+  },
+  "javascript_errors_before_logout": 0,
+  "access_tokens_issued": 3,
+  "download": {
+    "bytes": 8271073,
+    "duration": 15.067,
+    "codecs": [
+      "aac",
+      "h264"
+    ],
+    "sha256": "a3d31de59a974a77ad0561de7d0a429473dea45404f753b4dc35e6a16c1a895d"
+  },
+  "upload_bytes": 3774114,
+  "worker_results": [
+    {
+      "target": "import",
+      "state": "completed",
+      "progress": 0
+    },
+    {
+      "target": "local",
+      "state": "completed",
+      "progress": 15.0
+    }
+  ],
+  "issuer_checks": {
+    "jwks_reads": 1,
+    "authorizations": 2,
+    "pkce_exchanges": 2,
+    "refresh_exchanges": 1,
+    "revocations": 2,
+    "logouts": 1
+  }
+}
