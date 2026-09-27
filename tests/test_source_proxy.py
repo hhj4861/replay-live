@@ -76,3 +76,27 @@ def test_webm_vp9_opus_becomes_browser_playable_h264_aac(tmp_path):
     result = sources._probe(output, budget, 2)
     assert {stream['codec_name'] for stream in result['streams']} == {'h264', 'aac'}
     assert result['duration'] >= 1
+
+
+def packet_hash(path, stream):
+    return subprocess.run(['ffmpeg', '-v', 'error', '-i', str(path), '-map', stream,
+        '-c', 'copy', '-f', 'streamhash', '-hash', 'sha256', '-'],
+        capture_output=True, check=True, timeout=20).stdout
+
+
+@pytest.mark.parametrize('audio_codec', ['aac', 'libopus'])
+def test_compatible_video_packets_are_preserved_in_proxy_import(tmp_path, audio_codec):
+    source, output = tmp_path / 'source.mkv', tmp_path / 'output.mp4'
+    subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=160x90:rate=15',
+        '-f', 'lavfi', '-i', 'sine=frequency=440', '-t', '1', '-c:v', 'libx264',
+        '-crf', '18', '-pix_fmt', 'yuv420p', '-c:a', audio_codec, str(source)], check=True, timeout=20)
+    before = packet_hash(source, '0:v:0')
+    sources._make_mp4([source], output, sources._Budget(2 * 1024**2, 30, lambda: None),
+        2, expected_duration=1, transcode=True)
+    assert packet_hash(output, '0:v:0') == before
+    if audio_codec == 'aac':
+        assert packet_hash(output, '0:a:0') == packet_hash(source, '0:a:0')
+    result = sources._probe(output, sources._Budget(2 * 1024**2, 30, lambda: None), 2)
+    assert {s['codec_name'] for s in result['streams']} == {'h264', 'aac'}
+    subprocess.run(['ffmpeg', '-v', 'error', '-xerror', '-i', str(output), '-f', 'null', '-'],
+        check=True, timeout=20)

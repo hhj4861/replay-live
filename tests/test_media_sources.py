@@ -1,6 +1,7 @@
 """Public source imports: deterministic network doubles, real local MP4 remux."""
 import hashlib
 import io
+import json
 from pathlib import Path
 import socket
 import subprocess
@@ -166,9 +167,110 @@ def test_oversize_and_truncated_responses_fail(monkeypatch):
     requests, _ = network(monkeypatch, [Response(b'x', headers={'Content-Length': '1001'})])
     with pytest.raises(sources.SourceImportError, match='SOURCE_TOO_LARGE'):
         sources._Transport(budget(1000)).download('https://public.example.com/a', io.BytesIO())
-    network(monkeypatch, [Response(b'x', headers={'Content-Length': '2'})])
+    network(monkeypatch, [Response(b'x', headers={'Content-Length': '2'}),
+                          Response(b'x', headers={'Content-Length': '2'})])
     with pytest.raises(sources.SourceImportError, match='SOURCE_INCOMPLETE'):
         sources._Transport(budget()).download('https://public.example.com/a', io.BytesIO())
+
+
+def test_interrupted_segment_retries_without_duplicate_or_discarded_prior_segments(monkeypatch):
+    requests, _ = network(monkeypatch, [Response(b'bad', headers={'Content-Length': '8'}), Response(b'complete')])
+    limits = budget()
+    output = io.BytesIO(); output.write(b'previous-segment:')
+    sources._Transport(limits).download('https://public.example.com/segment', output)
+    assert output.getvalue() == b'previous-segment:complete'
+    assert len(requests) == 2 and limits.retries == 1
+    assert limits.media_bytes == 11  # Includes the failed transfer, not only saved bytes.
+
+
+def test_retry_is_shared_across_all_segments_and_failure_restores_file(monkeypatch):
+    requests, _ = network(monkeypatch, [Response(b'x', headers={'Content-Length': '2'}),
+        Response(b'first'), Response(b'y', headers={'Content-Length': '2'})])
+    limits = budget(); transport = sources._Transport(limits); output = io.BytesIO()
+    transport.download('https://public.example.com/first', output)
+    with pytest.raises(sources.SourceImportError, match='SOURCE_INCOMPLETE'):
+        transport.download('https://public.example.com/second', output)
+    assert output.getvalue() == b'first' and len(requests) == 3 and limits.retries == 1
+
+
+def test_retry_cannot_reset_transfer_byte_budget(monkeypatch):
+    requests, _ = network(monkeypatch, [Response(b'four', headers={'Content-Length': '8'}), Response(b'complete')])
+    limits = budget(10); output = io.BytesIO()
+    with pytest.raises(sources.SourceImportError, match='SOURCE_TOO_LARGE'):
+        sources._Transport(limits).download('https://public.example.com/segment', output)
+    assert output.getvalue() == b'' and len(requests) == 2 and limits.media_bytes == 4
+
+
+def test_retry_revalidates_redirect_authority(monkeypatch):
+    requests, _ = network(monkeypatch, [Response(b'x', headers={'Content-Length': '2'}),
+        Response(status=302, headers={'Location': 'https://127.0.0.1/private'})])
+    with pytest.raises(sources.SourceImportError, match='SOURCE_URL_UNSAFE'):
+        sources._Transport(budget()).download('https://public.example.com/segment', io.BytesIO())
+    assert len(requests) == 2 and all(r['host'] == 'public.example.com' for r in requests)
+
+
+def test_cancellation_prevents_retry_after_interrupted_body(monkeypatch):
+    cancelled = False
+
+    class Interrupted(Response):
+        def read1(self, size):
+            nonlocal cancelled
+            chunk = super().read1(size)
+            if not chunk:
+                cancelled = True
+            return chunk
+
+    def active():
+        if cancelled:
+            raise RuntimeError('lease lost')
+
+    requests, _ = network(monkeypatch, [Interrupted(b'x', headers={'Content-Length': '2'})])
+    output = io.BytesIO()
+    with pytest.raises(RuntimeError, match='lease lost'):
+        sources._Transport(budget(check=active)).download('https://public.example.com/segment', output)
+    assert len(requests) == 1 and output.getvalue() == b''
+
+
+def test_retry_cannot_reset_deadline(monkeypatch):
+    limits = budget()
+
+    class Expired(Response):
+        def read1(self, size):
+            chunk = super().read1(size)
+            if not chunk:
+                limits.deadline = 0
+            return chunk
+
+    requests, _ = network(monkeypatch, [Expired(b'x', headers={'Content-Length': '2'})])
+    output = io.BytesIO()
+    with pytest.raises(sources.SourceImportError, match='SOURCE_TIMEOUT'):
+        sources._Transport(limits).download('https://public.example.com/segment', output)
+    assert len(requests) == 1 and output.getvalue() == b'' and limits.retries == 0
+
+
+@pytest.mark.parametrize('method', ['GET', 'POST'])
+def test_only_read_only_metadata_requests_retry(monkeypatch, method):
+    requests, _ = network(monkeypatch, [Response(b'{', headers={'Content-Length': '2'}), Response(b'{}')])
+    limits = budget(); transport = sources._Transport(limits)
+    if method == 'GET':
+        assert transport.metadata('https://public.example.com/info', method=method)[2] == b'{}'
+        assert len(requests) == 2 and limits.metadata_bytes == 3
+    else:
+        with pytest.raises(sources.SourceImportError, match='SOURCE_INCOMPLETE'):
+            transport.metadata('https://public.example.com/info', method=method)
+        assert len(requests) == 1 and limits.retries == 0
+
+
+def test_incomplete_diagnostics_distinguish_body_and_duration_without_url(monkeypatch, caplog):
+    caplog.set_level('INFO', logger='server.media_sources')
+    network(monkeypatch, [Response(b'x', headers={'Content-Length': '2'}),
+        Response(b'x', headers={'Content-Length': '2'})])
+    with pytest.raises(sources.SourceImportError):
+        sources._Transport(budget()).download('https://public.example.com/file?secret=do-not-log', io.BytesIO())
+    with pytest.raises(sources.SourceImportError):
+        sources._require_complete(1, 15)
+    assert 'response_body_short' in caplog.text and 'duration_short' in caplog.text
+    assert 'do-not-log' not in caplog.text and 'public.example.com' not in caplog.text
 
 
 def test_socket_reader_checks_deadline_during_slow_response_headers():
@@ -364,7 +466,9 @@ def test_final_extractor_http_errors_use_typed_status_not_response_text(monkeypa
                                              (500, 'SOURCE_UNAVAILABLE')])
 @pytest.mark.parametrize('kind', ['direct', 'hls', 'dash'])
 def test_final_media_and_manifest_http_statuses_are_safe(monkeypatch, tmp_path, status, code, kind):
-    network(monkeypatch, [Response(b'upstream ?token=synthetic-secret', status=status)])
+    attempts = 2 if status == 500 and kind != 'hls' else 1
+    requests, _ = network(monkeypatch, [Response(b'upstream ?token=synthetic-secret', status=status)
+                                      for _ in range(attempts)])
     transport = sources._Transport(budget())
     with pytest.raises(sources.SourceImportError) as caught:
         if kind == 'direct':
@@ -376,6 +480,7 @@ def test_final_media_and_manifest_http_statuses_are_safe(monkeypatch, tmp_path, 
                                       'fragments': [{'path': 'segment.m4s'}]}, tmp_path / 'segment', transport, 120)
     assert caught.value.code == code and str(caught.value) == code
     assert transport.budget.media_bytes == 0
+    assert len(requests) == attempts
 
 
 def test_failed_metadata_client_can_recover_without_poisoning_budget(monkeypatch):
@@ -450,14 +555,22 @@ def sample_mp4(tmp_path_factory):
     return path.read_bytes()
 
 
-def test_direct_mp4_real_local_remux_and_hash(monkeypatch, tmp_path, sample_mp4):
-    network(monkeypatch, [Response(sample_mp4)])
+@pytest.mark.parametrize('interrupted', [False, True])
+def test_direct_mp4_real_local_remux_and_hash(monkeypatch, tmp_path, sample_mp4, caplog, interrupted):
+    caplog.set_level('INFO', logger='server.media_sources')
+    responses = [Response(sample_mp4[:100], headers={'Content-Length': str(len(sample_mp4))})] if interrupted else []
+    requests, _ = network(monkeypatch, [*responses, Response(sample_mp4)])
     path = tmp_path / 'output.mp4'
     result = sources.download_source({'provider': 'direct', 'url': 'https://media.example.com/video.mp4?token=synthetic'},
         path, max_bytes=1024 * 1024, max_duration=5, timeout=30, check_active=lambda: None)
     assert result == {'bytes': path.stat().st_size, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
                       'name': 'direct-recording.mp4'}
     assert list(tmp_path.iterdir()) == [path]
+    stages = [json.loads(r.message) for r in caplog.records if 'source_import_stage' in r.message]
+    assert [entry['stage'] for entry in stages] == ['metadata', 'download', 'prepare_mp4', 'checksum']
+    assert stages[-1]['retries'] == int(interrupted) and len(requests) == 1 + int(interrupted)
+    assert all(entry['elapsed_ms'] >= 0 for entry in stages)
+    assert 'synthetic' not in caplog.text and 'media.example.com' not in caplog.text
 
 
 def test_direct_media_duration_checked_after_download(monkeypatch, tmp_path, sample_mp4):
