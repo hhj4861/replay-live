@@ -16,6 +16,7 @@ import importlib
 import io
 import ipaddress
 import json
+import logging
 import math
 from pathlib import Path
 import queue
@@ -209,6 +210,7 @@ class _Budget:
         self.check_active = check_active
         self.media_bytes = self.metadata_bytes = self.requests = 0
         self.wire_bytes = 0
+        self.retries = 0
         self.failure = None
         self.cancel_error = None
 
@@ -226,6 +228,15 @@ class _Budget:
     def remaining(self):
         self.check()
         return max(.001, self.deadline - time.monotonic())
+
+    def retry(self):
+        self.check()
+        # One recovery across the entire import, including manifests/segments.
+        # Keep the original byte, wire, request and wall-clock budgets.
+        if self.retries >= 1:
+            return False
+        self.retries += 1
+        return True
 
     def consume(self, count, *, metadata):
         self.check()
@@ -528,19 +539,39 @@ class _Transport:
                 raise SourceImportError('SOURCE_METADATA_TOO_LARGE' if metadata else 'SOURCE_TOO_LARGE')
             yield chunk
         if length is not None and received != int(length):
+            logging.getLogger(__name__).info(json.dumps({'event': 'source_incomplete',
+                'reason': 'response_body_short', 'metadata': metadata,
+                'received_bytes': received, 'expected_bytes': int(length)}))
             raise SourceImportError('SOURCE_INCOMPLETE')
 
     def metadata(self, url, *, headers=None, method='GET', data=None):
-        with self.response(url, headers=headers, method=method, data=data) as (response, final_url):
-            payload = b'' if method == 'HEAD' else b''.join(self._read(response, metadata=True, limit=_METADATA_LIMIT))
-            return response.status, dict(response.getheaders()), payload, final_url
+        while True:
+            try:
+                with self.response(url, headers=headers, method=method, data=data) as (response, final_url):
+                    payload = b'' if method == 'HEAD' else b''.join(self._read(response, metadata=True, limit=_METADATA_LIMIT))
+                    return response.status, dict(response.getheaders()), payload, final_url
+            except SourceImportError as error:
+                if (method not in {'GET', 'HEAD'} or error.code not in {'SOURCE_INCOMPLETE', 'SOURCE_UNAVAILABLE'}
+                        or not self.budget.retry()):
+                    raise
 
     def download(self, url, file, *, headers=None):
-        with self.response(url, headers=headers) as (response, _):
-            if response.status != 200:
-                raise SourceImportError(_http_error_code(response.status))
-            for chunk in self._read(response, metadata=False, limit=self.budget.max_bytes - self.budget.media_bytes):
-                file.write(chunk)
+        offset = file.tell()
+        while True:
+            try:
+                with self.response(url, headers=headers) as (response, _):
+                    if response.status != 200:
+                        raise SourceImportError(_http_error_code(response.status))
+                    for chunk in self._read(response, metadata=False, limit=self.budget.max_bytes - self.budget.media_bytes):
+                        file.write(chunk)
+                return
+            except SourceImportError as error:
+                # Preserve completed earlier segments, never append a second
+                # copy of the partial segment. Failed bytes still count as traffic.
+                file.seek(offset)
+                file.truncate()
+                if error.code not in {'SOURCE_INCOMPLETE', 'SOURCE_UNAVAILABLE'} or not self.budget.retry():
+                    raise
 
 
 class _QuietLogger:
@@ -838,6 +869,8 @@ def _require_complete(actual, expected):
     # segment must not silently replace the selected recording. Never allow more
     # than two seconds of rounding, and only 250 ms for short recordings.
     if expected is not None and actual + max(.25, min(2.0, expected * .01)) < expected:
+        logging.getLogger(__name__).info(json.dumps({'event': 'source_incomplete',
+            'reason': 'duration_short', 'actual_seconds': actual, 'expected_seconds': expected}))
         raise SourceImportError('SOURCE_INCOMPLETE')
 
 
@@ -855,7 +888,11 @@ def _make_mp4(paths, output, budget, max_duration, *, expected_duration=None, tr
     command = ['ffmpeg', '-hide_banner', '-nostdin', '-loglevel', 'error', '-xerror', '-threads', '2']
     for path in paths:
         command.extend(_local_input(path))
-    codecs = ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-threads', '2', '-c:a', 'aac', '-b:a', '128k'] if transcode else ['-c', 'copy']
+    encode_video = transcode and (videos[0]['codec_name'] != 'h264' or videos[0].get('pix_fmt') != 'yuv420p')
+    encode_audio = transcode and audios[0]['codec_name'] != 'aac'
+    codecs = (['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-threads', '2']
+              if encode_video else ['-c:v', 'copy'])
+    codecs += ['-c:a', 'aac', '-b:a', '128k'] if encode_audio else ['-c:a', 'copy']
     command.extend(['-map', '0:v:0', '-map', f'{len(paths) - 1}:a:0', *codecs, '-movflags', '+faststart',
                     '-f', 'mp4', '-y', str(output)])
 
@@ -890,6 +927,14 @@ def download_source(source, output: Path, *, max_bytes: int, max_duration: float
     use_proxy = bool(proxy_url and normalized['provider'] == 'youtube')
     transport = _Transport(budget, proxy_url if use_proxy else None)
     complete = False
+    started = time.monotonic()
+    stage = 'metadata'
+    stage_started = started
+
+    def finish_stage():
+        logging.getLogger(__name__).info(json.dumps({'event': 'source_import_stage', 'stage': stage,
+            'elapsed_ms': round((time.monotonic() - stage_started) * 1000), 'retries': budget.retries}))
+
     try:
         budget.check()
         with tempfile.TemporaryDirectory(prefix='source-', dir=output.parent) as directory:
@@ -901,6 +946,8 @@ def download_source(source, output: Path, *, max_bytes: int, max_duration: float
                 _recording(info, max_duration)
                 formats = _select_formats(info, transcode=use_proxy)
                 expected_duration = float(info['duration']) if info.get('duration') is not None else None
+            finish_stage()
+            stage, stage_started = 'download', time.monotonic()
             paths = []
             for index, fmt in enumerate(formats):
                 path = Path(directory) / f'input-{index}.media'
@@ -908,15 +955,22 @@ def download_source(source, output: Path, *, max_bytes: int, max_duration: float
                 if declared_duration is not None:
                     expected_duration = max(expected_duration or 0, declared_duration)
                 paths.append(path)
+            finish_stage()
+            stage, stage_started = 'prepare_mp4', time.monotonic()
             _make_mp4(paths, output, budget, max_duration, expected_duration=expected_duration, transcode=use_proxy)
+            finish_stage()
+        stage, stage_started = 'checksum', time.monotonic()
         digest = hashlib.sha256()
         with output.open('rb') as file:
             while chunk := file.read(_CHUNK):
                 budget.check()
                 digest.update(chunk)
+        finish_stage()
         complete = True
         return {'bytes': output.stat().st_size, 'sha256': digest.hexdigest(), 'name': f'{normalized["provider"]}-recording.mp4'}
-    except SourceImportError:
+    except SourceImportError as error:
+        logging.getLogger(__name__).info(json.dumps({'event': 'source_import_failed', 'stage': stage,
+            'code': error.code, 'elapsed_ms': round((time.monotonic() - started) * 1000), 'retries': budget.retries}))
         raise
     except Exception as error:
         if error is budget.cancel_error:
