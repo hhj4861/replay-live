@@ -14,6 +14,7 @@ import BroadcastWatchLinks, { type BroadcastLinks } from './broadcast-watch-link
 import MemberManagement from './member-management';
 import { canManageMembers, type Account } from '@/lib/member-management';
 import { createMediaSelection } from './media-selection';
+import { createStudioConfigCache, sourceDurationFailure, storageBreakdown } from '@/lib/studio-data';
 import LocalImportFailure, { type ImportFailure } from './local-import-failure';
 import SourceLinkHelp from './source-link-help';
 import './commercial-studio.css';
@@ -31,6 +32,7 @@ type TargetCatalog = { targets: StreamTarget[]; max_destinations: number };
 type SourcePlatform = { id: string; label: string; note: string };
 type SourceCatalog = { sources: SourcePlatform[] };
 type Usage = { storage_bytes: number; storage_limit_bytes: number; storage_reserved_bytes: number; storage_available_bytes: number; reserved_runtime_seconds_today: number; runtime_limit_seconds_per_day: number };
+type StudioConfig = { choices: TargetCatalog; sources: SourceCatalog | undefined; limits: Omit<Health, 'ready'> };
 type OutputEstimate = { media_id: string; estimated_output_bytes: number; max_output_bytes: number; storage_available_bytes: number; can_create: boolean; reason: string | null };
 const states: Record<string, string> = { importing: '링크에서 영상 가져오는 중', pending: '영상 검사 대기', uploading: '업로드 대기', validating: '영상 검사 중', ready: '사용 가능', scheduled: '예약 대기', starting: '연결 중', streaming: '송출 중', stopping: '중지 중', stopped: '중지됨', completed: '완료', failed: '실패', retry_wait: '재시도 대기' };
 const terminal = new Set(['completed', 'failed', 'stopped']);
@@ -113,6 +115,7 @@ export default function CommercialHome() {
   const picker = useRef<HTMLInputElement>(null);
   const pendingUpload = useRef<{ id: string; digest: string } | null>(null);
   const [mediaSelection] = useState(() => createMediaSelection());
+  const [configCache] = useState(() => createStudioConfigCache<StudioConfig>());
   const importRequest = useRef<{ body: string; key: string } | null>(null);
   const uploading = useRef<XMLHttpRequest | null>(null);
   const actionVersion = useRef(0);
@@ -138,10 +141,14 @@ export default function CommercialHome() {
   const maxDestinations = catalog?.max_destinations || health?.max_concurrent || 1;
   const tooMany = targets.length > maxDestinations;
   const importedMedia = media.find(item => item.id === importId);
+  const storage = usage ? storageBreakdown(usage) : undefined;
+  const failureMessage = (code: string) => code === 'SOURCE_DURATION_EXCEEDED'
+    ? sourceDurationFailure(health?.max_duration_seconds) : failures[code];
   const importPending = !!importId && (!importedMedia || !['ready', 'failed', 'stopped'].includes(importedMedia.status));
   const sourcePlatform = sourceCatalog?.sources.find(item => item.id === sourceProvider);
   const googleSignedIn = useCallback(() => { setAuthenticated(true); setError(''); }, []);
   const resetAccount = useCallback(() => {
+    configCache.clear();
     connectionAutofill.reset();
     mediaSelection.reset();
     actionVersion.current += 1; uploading.current?.abort(); uploading.current = null; pendingUpload.current = null;
@@ -154,7 +161,7 @@ export default function CommercialHome() {
     connectionStoreRef.current = undefined; connectionOwnerRef.current = undefined; connectionListVersion.current += 1;
     setConnectionOwner(undefined); setConnectionStore(undefined); setSavedConnections({}); setConnectionStorageError('');
     setAccount(undefined); setManagementView(''); managementTrigger.current = null;
-  }, [connectionAutofill, mediaSelection]);
+  }, [connectionAutofill, mediaSelection, configCache]);
   useEffect(() => {
     window.addEventListener('replay-signin-required', resetAccount);
     return () => window.removeEventListener('replay-signin-required', resetAccount);
@@ -184,25 +191,42 @@ export default function CommercialHome() {
       connectionAutofill.reset(); setDestinations({}); setConfirmed(false);
     }
     setAccount(me); setRoles(me.roles); setConnected(true);
-    const [m, j, u, choices, sources, limits] = await Promise.all([
-      api<Media[]>('/media', { signal: bounded }), api<Job[]>('/broadcasts', { signal: bounded }),
-      api<Usage>('/usage', { signal: bounded }), api<TargetCatalog>('/stream-targets', { signal: bounded }),
-      api<SourceCatalog>('/media-sources', { signal: bounded }).catch(() => undefined),
-      api<Omit<Health, 'ready'>>('/limits', { signal: bounded }),
-    ]);
-    if (bounded.aborted || version !== refreshVersion.current) return;
-    assertSessionIdentity(identity);
-    setMedia(m); setJobs(j); setUsage(u); setCatalog(choices); setSourceCatalog(sources);
-    setHealth(current => ({ ...limits, ready: current?.ready ?? false }));
     if (!canManageMembers(me)) setManagementView(current => current === 'members' ? '' : current);
-    const selection = mediaSelection.reconcile(m, identity, selectionGeneration);
-    if (selection.kind === 'ready') {
-      setMediaId(current => mediaSelection.capture() === selectionGeneration ? selection.id : current); setSourceMode('library');
-      setNotice('영상이 준비됐습니다. 방송할 채널을 선택해 주세요.');
-    } else if (selection.kind === 'default') {
-      setMediaId(current => mediaSelection.capture() !== selectionGeneration ? current : current && m.some(item => item.id === current && item.status === 'ready') ? current : selection.allowFirst ? m.find(item => item.status === 'ready')?.id || '' : '');
-    }
-  }, [connectionAutofill, mediaSelection]);
+    const current = () => {
+      if (bounded.aborted || version !== refreshVersion.current) return false;
+      assertSessionIdentity(identity);
+      return true;
+    };
+    // Render completed media immediately; slower history/configuration must not
+    // keep an already prepared recording behind a shared Promise.all barrier.
+    await Promise.all([
+      api<Media[]>('/media', { signal: bounded }).then(m => {
+        if (!current()) return;
+        setMedia(m);
+        const selection = mediaSelection.reconcile(m, identity, selectionGeneration);
+        if (selection.kind === 'ready') {
+          setMediaId(value => mediaSelection.capture() === selectionGeneration ? selection.id : value); setSourceMode('library');
+          setNotice('영상이 준비됐습니다. 방송할 채널을 선택해 주세요.');
+        } else if (selection.kind === 'default') {
+          setMediaId(value => mediaSelection.capture() !== selectionGeneration ? value : value && m.some(item => item.id === value && item.status === 'ready') ? value : selection.allowFirst ? m.find(item => item.status === 'ready')?.id || '' : '');
+        }
+      }),
+      api<Job[]>('/broadcasts', { signal: bounded }).then(value => { if (current()) setJobs(value); }),
+      api<Usage>('/usage', { signal: bounded }).then(value => { if (current()) setUsage(value); }),
+      configCache.read(identity, async () => {
+        const [choices, sources, limits] = await Promise.all([
+          api<TargetCatalog>('/stream-targets', { signal: bounded }),
+          api<SourceCatalog>('/media-sources', { signal: bounded }).catch(() => undefined),
+          api<Omit<Health, 'ready'>>('/limits', { signal: bounded }),
+        ]);
+        return { choices, sources, limits };
+      }).then(({ choices, sources, limits }) => {
+        if (!current()) return;
+        setCatalog(choices); setSourceCatalog(sources);
+        setHealth(value => ({ ...limits, ready: value?.ready ?? false }));
+      }),
+    ]);
+  }, [connectionAutofill, mediaSelection, configCache]);
   useEffect(() => {
     if (!authenticated) return;
     const controller = new AbortController();
@@ -289,7 +313,7 @@ export default function CommercialHome() {
       if (version === actionVersion.current && identity === sessionIdentity()) {
         if ((err as Error).name === 'AbortError') setNotice('영상 가져오기를 취소했습니다.');
         else {
-          const message = failures[(err as Error).message] || (err as Error).message;
+          const message = failureMessage((err as Error).message) || (err as Error).message;
           if (name === 'import') {
             setImportFailure({ title: '영상 가져오기를 시작하지 못했습니다.', message, connect: false });
           } else setError(message);
@@ -555,7 +579,7 @@ export default function CommercialHome() {
     {!connected && <output className="message error studio-message">{account ? '서버에 다시 연결하고 있습니다.' : '스튜디오 정보를 불러오고 있습니다.'}<Button variant="ghost" onClick={() => void action('reconnect', async () => { await refresh(); })}>다시 연결</Button><Button variant="ghost" onClick={() => void action('login', signIn)}>다시 로그인</Button></output>}
     {error && <p className="message error studio-message" role="alert">{error}</p>}{notice && <output className="message success studio-message"><Check size={17} />{notice}</output>}
     {canOperate && <>
-    <div className="studio-intro" id="studio-top"><div><h1>새 방송 만들기</h1><p>영상 하나로, 여러 채널의 시청자를 만나세요.</p></div>{usage && <div className="studio-storage"><div><span>내 저장 공간</span><strong>{size(usage.storage_bytes)} <small>/ {size(usage.storage_limit_bytes)}</small></strong></div><meter min={0} max={usage.storage_limit_bytes} value={usage.storage_bytes} aria-label="저장 공간 사용량" /><span>{usage.storage_reserved_bytes > 0 ? `처리 중인 파일 ${size(usage.storage_reserved_bytes)} 포함` : '원본 영상과 방송 결과를 보관합니다.'}</span></div>}</div>
+    <div className="studio-intro" id="studio-top"><div><h1>새 방송 만들기</h1><p>영상 하나로, 여러 채널의 시청자를 만나세요.</p></div>{usage && storage && <div className="studio-storage"><div><span>내 저장 공간</span><strong>{size(storage.stored)} <small>/ {size(usage.storage_limit_bytes)}</small></strong></div><meter min={0} max={usage.storage_limit_bytes} value={storage.stored} aria-label="저장 완료된 파일 사용량" /><span>{storage.reserved > 0 ? `처리 중 임시 예약 ${size(storage.reserved)}` : '원본 영상과 방송 결과를 보관합니다.'}</span></div>}</div>
     <ol className="studio-steps" aria-label="방송 준비 순서"><li className={sourceReady ? 'done' : 'current'}><a href="#source-title"><span>{sourceReady ? <Check size={16} /> : '1'}</span><div><strong>영상 준비</strong><small>{sourceReady ? '영상이 준비됐어요' : '링크 또는 파일을 추가하세요'}</small></div></a></li><li className={channelsReady ? 'done' : sourceReady ? 'current' : ''}><a href="#channels-title"><span>{channelsReady ? <Check size={16} /> : '2'}</span><div><strong>채널 선택</strong><small>{targets.length ? `${targets.length}개 선택${channelsReady ? ' · 입력 완료' : ' · 연결 정보 입력'}` : maxDestinations === 1 ? '방송할 채널을 선택하세요' : '여러 채널을 함께 선택하세요'}</small></div></a></li><li className={!pendingReason ? 'current' : ''}><a href="#publish-title"><span>3</span><div><strong>방송 시작</strong><small>바로 시작하거나 예약하세요</small></div></a></li></ol>
     <div className="studio-workspace"><section className="studio-source-panel studio-panel" aria-labelledby="source-title"><div className="studio-panel-heading"><div><span className="studio-step-number">1</span><h2 id="source-title">방송할 영상</h2></div><span className={sourceReady ? 'studio-ready-tag' : 'studio-muted-tag'}>{sourceReady ? <><Check size={13} />준비됨</> : '영상 추가'}</span></div>
       <div className="studio-source-body"><div className="preview studio-preview">
@@ -570,7 +594,7 @@ export default function CommercialHome() {
         </fieldset>
         {sourceMode === 'library' ? <div className="studio-library"><div className="studio-library-heading"><strong>내 영상</strong><span>{media.length}개</span></div>
           <ul className="studio-media-list" aria-label="송출할 영상 선택">{media.map(item => <li key={item.id} className={mediaId === item.id ? 'is-selected' : ''}>
-            <button type="button" className="studio-media-choice" aria-pressed={mediaId === item.id} aria-label={`${item.name} 선택`} disabled={!!busy || importPending || item.status !== 'ready'} onClick={() => { mediaSelection.select(); setMediaId(item.id); setConfirmed(false); }}><span className="studio-file-icon"><Video size={18} /></span><span><strong>{item.name}</strong><small>{item.status === 'ready' ? `${clock(item.duration)} · ${size(item.bytes)}` : states[item.status] || item.status}</small>{item.error_code && <small className="failure">{failures[item.error_code] || '영상을 준비하지 못했습니다. 다시 추가해 주세요.'}</small>}</span>{mediaId === item.id && <Check size={17} className="studio-media-check" aria-hidden="true" />}</button>
+            <button type="button" className="studio-media-choice" aria-pressed={mediaId === item.id} aria-label={`${item.name} 선택`} disabled={!!busy || importPending || item.status !== 'ready'} onClick={() => { mediaSelection.select(); setMediaId(item.id); setConfirmed(false); }}><span className="studio-file-icon"><Video size={18} /></span><span><strong>{item.name}</strong><small>{item.status === 'ready' ? `${clock(item.duration)} · ${size(item.bytes)}` : states[item.status] || item.status}</small>{item.error_code && <small className="failure">{failureMessage(item.error_code) || '영상을 준비하지 못했습니다. 다시 추가해 주세요.'}</small>}</span>{mediaId === item.id && <Check size={17} className="studio-media-check" aria-hidden="true" />}</button>
             {canOperate && <button type="button" className="studio-delete" aria-label={`${item.name} 삭제`} disabled={!!busy || ['importing', 'validating', 'pending'].includes(item.status)} onClick={() => void action('delete', async () => { await api(`/media/${item.id}`, { method: 'DELETE' }); setMedia(current => current.filter(value => value.id !== item.id)); if (item.id === importId) setImportId(''); setNotice('보관함에서 영상을 삭제했습니다.'); })}><Trash2 size={16} /></button>}
           </li>)}</ul>{!media.length && <div className="studio-library-empty"><Library size={24} /><p>아직 보관한 영상이 없어요.</p><button type="button" onClick={() => setSourceMode('link')}>영상 링크로 추가하기 <ArrowRight size={14} /></button></div>}
           <p className="hint studio-retention">영상과 결과 파일은 {health?.retention_days ?? '—'}일 동안 보관됩니다.</p></div> : sourceMode === 'link' ? <form className="source-import-form" onSubmit={importSource}>
@@ -605,7 +629,7 @@ export default function CommercialHome() {
         <input type="file" ref={picker} accept=".mp4,video/mp4" hidden onChange={event => void upload(event.target.files?.[0])} />
         {busy === 'upload' && <Progress value={uploadProgress} aria-label="영상 업로드 진행률" />}
         {importPending && <output className="source-import-status" aria-live="polite"><LoaderCircle size={18} className="source-spinner" aria-hidden="true" /><span><strong>{states[importedMedia?.status || (preparationKind === 'upload' ? 'validating' : 'importing')] || '영상 준비 중'}</strong><small>준비와 검사가 끝나면 이 영상이 자동으로 선택됩니다. 송출 대상은 미리 설정할 수 있습니다.</small></span></output>}
-        {importedMedia && ['failed', 'stopped'].includes(importedMedia.status) && <div className="source-import-status failed" role="alert"><div><strong>영상을 준비하지 못했습니다.</strong><p>{failures[importedMedia.error_code || ''] || (preparationKind === 'upload' ? '업로드한 영상이 재생 가능한 MP4인지 확인하고 다시 선택하세요.' : '링크의 공개 여부와 유효 기간을 확인하세요. 플랫폼에서 접근을 제한할 수도 있습니다.')}</p><div className="source-import-actions">{preparationKind === 'import' && <Button size="sm" variant="outline" disabled={!canOperate || !!busy || !connected} onClick={() => { setSourceMode('link'); void importSource(); }}>현재 링크로 다시 가져오기</Button>}<Button size="sm" variant="ghost" onClick={() => setSourceMode('file')}>파일로 업로드</Button></div></div></div>}
+        {importedMedia && ['failed', 'stopped'].includes(importedMedia.status) && <div className="source-import-status failed" role="alert"><div><strong>영상을 준비하지 못했습니다.</strong><p>{failureMessage(importedMedia.error_code || '') || (preparationKind === 'upload' ? '업로드한 영상이 재생 가능한 MP4인지 확인하고 다시 선택하세요.' : '링크의 공개 여부와 유효 기간을 확인하세요. 플랫폼에서 접근을 제한할 수도 있습니다.')}</p><div className="source-import-actions">{preparationKind === 'import' && <Button size="sm" variant="outline" disabled={!canOperate || !!busy || !connected} onClick={() => { setSourceMode('link'); void importSource(); }}>현재 링크로 다시 가져오기</Button>}<Button size="sm" variant="ghost" onClick={() => setSourceMode('file')}>파일로 업로드</Button></div></div></div>}
       </div>
       </div>
     </section><div className="studio-broadcast-column"><form id="broadcast-form" onSubmit={create} noValidate>
@@ -631,7 +655,7 @@ export default function CommercialHome() {
           <p className="studio-job-source"><Video size={12} aria-hidden="true" /><span>원본: {job.media_name || '영상 정보 없음'}</span></p>
         </div>
         <span className={`status ${job.state}`}>{job.state === 'completed' && job.target !== 'local' ? '전송 완료' : states[job.state] || job.state}</span>
-        <div className="studio-job-progress"><span>{clock(job.progress)} <small>/ {clock(job.duration)}</small></span><progress value={Math.min(job.progress, job.duration)} max={job.duration || 1} aria-label={`${job.title} 송출 진행률`} />{job.error_code && <small className="failure">{failures[job.error_code] || '송출을 마치지 못했습니다. 실행 기록을 확인해 주세요.'}</small>}</div>
+        <div className="studio-job-progress"><span>{clock(job.progress)} <small>/ {clock(job.duration)}</small></span><progress value={Math.min(job.progress, job.duration)} max={job.duration || 1} aria-label={`${job.title} 송출 진행률`} />{job.error_code && <small className="failure">{failureMessage(job.error_code) || '송출을 마치지 못했습니다. 실행 기록을 확인해 주세요.'}</small>}</div>
         <div className="studio-job-action">{!terminal.has(job.state) && canOperate ? <Button size="sm" variant="outline" disabled={!!busy} onClick={() => void action('stop', async () => { const stopped = await api<Job>(`/broadcasts/${job.id}/stop`, { method: 'POST' }); setJobs(current => current.map(item => item.id === stopped.id ? stopped : item)); })}><Square size={12} />{job.state === 'scheduled' ? '예약 취소' : '중지'}</Button> : job.state === 'completed' && job.target === 'local' ? <Button size="sm" variant="ghost" onClick={() => void action('download', async () => { const result = await api<Signed>(`/broadcasts/${job.id}/output`); const link = document.createElement('a'); link.href = result.url; link.rel = 'noreferrer'; link.download = `replay-${job.id}.flv`; link.click(); })}><Download size={15} />결과 받기</Button> : null}</div>
         <BroadcastWatchLinks job={job} canEdit={canOperate} disabled={!!busy} onSave={links => saveWatchLinks(job, links)} />
       </article>)}</div> : <div className="studio-history-empty"><span><History size={25} /></span><div><strong>{historyFilter === 'all' ? '첫 방송을 준비해 보세요' : historyFilter === 'active' ? '진행 중인 방송이 없습니다' : '아직 종료된 방송이 없습니다'}</strong><p>{historyFilter === 'all' ? '위에서 영상과 채널을 선택하면 여기에 방송 이력이 표시됩니다.' : '다른 목록에서 방송 상태를 확인할 수 있어요.'}</p></div></div>}

@@ -4,7 +4,7 @@ Google claims never assign application tenants or roles. The browser uses GIS
 with a server-issued nonce; only hashes of challenges and opaque sessions persist.
 """
 import asyncio
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 import hashlib
 import hmac
@@ -312,12 +312,30 @@ class GoogleAuthenticator:
 
     def _authenticate(self, authorization, requested_tenant):
         token_hash = self._token(authorization)
-        with self._transaction() as connection:
-            row, roles = self._session(connection, token_hash, self._now(connection))
-            if requested_tenant and requested_tenant != row['tenant_id']:
-                raise HTTPException(403, '다른 조직의 자료에 접근할 수 없습니다.')
-            return Principal('google:' + row['subject'], row['tenant_id'], roles,
-                             token_id=token_hash, expires_at=row['expires_at'])
+        # Authentication only reads the current committed session. A single
+        # joined statement avoids serializing every page request behind row
+        # locks and the mutation lock. Refresh/logout retain their locked paths.
+        try:
+            with self._lock if self._sqlite else nullcontext():
+                with self.engine.connect() as connection:
+                    now = self.clock() if self._sqlite else func.extract('epoch', func.statement_timestamp())
+                    row = connection.execute(select(sessions, identities.c.tenant_id, identities.c.email,
+                        identities.c.email_authoritative, identities.c.roles, identities.c.enabled)
+                        .join(identities, sessions.c.subject == identities.c.subject)
+                        .join(families, (sessions.c.family_id == families.c.id) & (sessions.c.subject == families.c.subject))
+                        .where(sessions.c.token_hash == token_hash, sessions.c.retired.is_(False),
+                            sessions.c.expires_at > now, sessions.c.absolute_expires_at > now,
+                            families.c.revoked.is_(False), families.c.absolute_expires_at > now)).mappings().first()
+                    if row is None:
+                        raise _unauthorized()
+                    if not row['enabled'] or not self._allowed(row['subject'], row['email'], row['email_authoritative']):
+                        raise HTTPException(403, '이 계정은 현재 접속이 허용되지 않습니다.')
+                    if requested_tenant and requested_tenant != row['tenant_id']:
+                        raise HTTPException(403, '다른 조직의 자료에 접근할 수 없습니다.')
+                    return Principal('google:' + row['subject'], row['tenant_id'], self.account_roles(row),
+                                     token_id=token_hash, expires_at=row['expires_at'])
+        except SQLAlchemyError:
+            raise HTTPException(503, '로그인 저장소에 연결할 수 없습니다. 잠시 후 다시 시도하세요.') from None
 
     async def authenticate(self, authorization, requested_tenant=None):
         return await asyncio.to_thread(self._authenticate, authorization, requested_tenant)
