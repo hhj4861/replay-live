@@ -137,7 +137,7 @@ def install_device_imports(app, cfg, repo, objects, keys, policy, writer, public
         expiry = min(now + 600, user.expires_at or now)
         if expiry < now + 60:
             raise HTTPException(401, '로그인을 갱신한 뒤 다시 가져오세요.')
-        limit = min(50 * 1024**2, cfg.max_upload_bytes, objects.max_put_bytes,
+        limit = min(50 * 1024**2, cfg.max_upload_bytes or 50 * 1024**2, objects.max_put_bytes,
                     repo.usage(user.tenant_id)['storage_available_bytes'])
         if limit < 1:
             raise HTTPException(409, '보관함의 저장 공간이 부족합니다.')
@@ -149,7 +149,7 @@ def install_device_imports(app, cfg, repo, objects, keys, policy, writer, public
         row = dict(id=id, tenant_id=user.tenant_id, subject=user.subject, name=name,
             source_ciphertext=keys.encrypt(json.dumps(source), context={'tenant_id': user.tenant_id}),
             token_hash=hashlib.sha256(token.encode()).hexdigest(), state='queued', max_bytes=int(limit),
-            max_duration=min(120, cfg.max_duration), expires_at=expiry, error_code=None)
+            max_duration=min(120, cfg.max_duration or 120), expires_at=expiry, error_code=None)
         with repo._transaction() as conn:
             repo._gate(conn)
             repo._check_admission(conn, user.tenant_id)

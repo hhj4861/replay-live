@@ -96,8 +96,9 @@ class Settings:
                         or bridge.port not in (None, 443) or bridge.query or bridge.fragment
                         or bridge.path != '/api/blob-control'):
                     raise ValueError('Object storage requires an HTTPS control endpoint')
-                limit = 64 if self.storage_provider == 'cloudflare-r2' else 128
-                if self.max_upload_bytes > 50 * 1024**2 or self.max_output_bytes > limit * 1024**2:
+                limit = 5 * 1024 - 5 if self.storage_provider == 'cloudflare-r2' else 128
+                upload_limit = limit if self.storage_provider == 'cloudflare-r2' else 50
+                if self.max_upload_bytes > upload_limit * 1024**2 or self.max_output_bytes > limit * 1024**2:
                     raise ValueError('Object upload/output limits exceed the supported adapter limits')
             if parsed.scheme != 'https' or any(urlsplit(o).scheme != 'https' for o in self.origins):
                 raise ValueError('Production requires HTTPS')
@@ -107,10 +108,15 @@ class Settings:
                 raise ValueError('Production output must fit the supported S3 single PUT limit')
         elif parsed.scheme not in ('http', 'https'):
             raise ValueError('Invalid public URL')
-        for name in ('max_upload_bytes', 'max_output_bytes', 'max_duration', 'max_storage_bytes', 'tenant_concurrency',
+        for name in ('max_output_bytes', 'max_storage_bytes', 'tenant_concurrency',
                      'global_concurrency', 'max_pending_jobs', 'retention_days', 'validation_timeout', 'lease_seconds', 'reservation_grace'):
             if getattr(self, name) <= 0:
                 raise ValueError(f'{name} must be positive')
+        # Zero disables a per-video product limit; account quotas and job budgets remain enforced.
+        for name in ('max_upload_bytes', 'max_duration'):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f'{name} must be a nonnegative integer')
         if isinstance(self.max_output_bytes, bool) or not isinstance(self.max_output_bytes, int) or self.max_output_bytes > MAX_OUTPUT_BYTES:
             raise ValueError('REPLAY_MAX_OUTPUT_BYTES must be an integer no larger than the worker file limit')
         if self.tenant_concurrency > self.global_concurrency or self.max_duration + 120 > self.worker_max_seconds:

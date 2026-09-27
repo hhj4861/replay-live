@@ -188,8 +188,8 @@ def run_job(job, *, client=None, workdir=None):
                 result = {'state': 'stopped', 'progress': lease.progress}
             elif job['target'] in ('validate', 'import'):
                 metadata = validate_media(source, validation_timeout=min(job['validation_timeout'], max(1, job['deadline'] - time.time())),
-                    allow_portrait=True, should_stop=lease.should_stop)
-                if metadata['duration'] > job['max_duration']:
+                    allow_portrait=True, should_stop=lease.should_stop, max_duration=job['max_duration'])
+                if job['max_duration'] and metadata['duration'] > job['max_duration']:
                     raise MediaError('MEDIA_TOO_LONG', '허용된 영상 길이를 초과했습니다.')
                 lease.require_active()
                 if imported:
@@ -251,11 +251,46 @@ def run_job(job, *, client=None, workdir=None):
                         raise MediaError('OUTPUT_LIMIT_EXCEEDED', '출력 파일이 예약된 용량을 초과했습니다.')
                     if os.fstat(handle.fileno()).st_size != output_size:
                         raise MediaError('MEDIA_INTEGRITY_FAILED', '출력 파일의 크기가 변경되었습니다.')
-                    response = lease.http.put(signed['url'], headers=upload_headers,
-                        content=output_chunks(handle, output_size, output_budget, check_active=lease.require_active),
-                        timeout=lease.active_timeout(60))
+                    if signed.get('multipart') is not None:
+                        part_size = signed['multipart'].get('part_size')
+                        if part_size != 32 * 1024**2:
+                            raise MediaError('MEDIA_INTEGRITY_FAILED', '분할 업로드 정보가 올바르지 않습니다.')
+                        try:
+                            parts = []
+                            remaining = output_size
+                            while remaining:
+                                lease.require_active()
+                                data = handle.read(min(part_size, remaining))
+                                if len(data) != min(part_size, remaining):
+                                    raise MediaError('MEDIA_INTEGRITY_FAILED', '출력 파일을 끝까지 읽을 수 없습니다.')
+                                number = len(parts) + 1
+                                headers = dict(upload_headers)
+                                headers.update({'content-length': str(len(data)), 'x-replay-part': str(number)})
+                                response = lease.http.put(signed['url'], headers=headers, content=data,
+                                    timeout=lease.active_timeout(90))
+                                response.raise_for_status()
+                                part = response.json()
+                                if part.get('partNumber') != number or not isinstance(part.get('etag'), str) or not 1 <= len(part['etag']) <= 512:
+                                    raise MediaError('MEDIA_INTEGRITY_FAILED', '업로드한 조각을 확인하지 못했습니다.')
+                                parts.append({'partNumber': number, 'etag': part['etag']})
+                                remaining -= len(data)
+                            lease.require_active()
+                            if os.fstat(handle.fileno()).st_size != output_size:
+                                raise MediaError('MEDIA_INTEGRITY_FAILED', '출력 파일의 크기가 변경되었습니다.')
+                            response = lease.http.post(signed['url'], json={'parts': parts}, timeout=lease.active_timeout(180))
+                            response.raise_for_status()
+                        except BaseException:
+                            try:
+                                lease.http.delete(signed['url'], timeout=5)
+                            except Exception:
+                                pass  # Durable reservation cleanup and R2 multipart expiry remain active.
+                            raise
+                    else:
+                        response = lease.http.put(signed['url'], headers=upload_headers,
+                            content=output_chunks(handle, output_size, output_budget, check_active=lease.require_active),
+                            timeout=lease.active_timeout(60))
+                        response.raise_for_status()
                     lease.require_active()
-                    response.raise_for_status()
                 result.update(output_bytes=output_size, output_sha256=checksum)
         except (MediaError, StreamTargetError, SourceImportError) as exc:
             result = {'state': 'failed', 'error_code': exc.code, 'progress': lease.progress}

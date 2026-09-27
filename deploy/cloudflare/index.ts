@@ -34,20 +34,20 @@ export class ApiContainer extends Container<Env> {
       REPLAY_SECRET_PROVIDER: 'env-aesgcm', REPLAY_AWS_AUTH_MODE: 'standard',
       REPLAY_BLOB_CONTROL_URL: `${env.REPLAY_PUBLIC_URL}/api/blob-control`,
       REPLAY_DISPATCH_MODE: 'cloudflare', REPLAY_DISPATCH_WAKEUP_URL: `${env.REPLAY_PUBLIC_URL}/api/wake`,
-      REPLAY_MAX_UPLOAD_BYTES: String(50 * 1024 ** 2), REPLAY_MAX_OUTPUT_BYTES: String(64 * 1024 ** 2) });
+      REPLAY_MAX_UPLOAD_BYTES: this.envVars.REPLAY_MAX_UPLOAD_BYTES ?? '0', REPLAY_MAX_OUTPUT_BYTES: String(64 * 1024 ** 2) });
   }
   override onError(): void { throw new Error('API_CONTAINER_UNAVAILABLE'); }
 }
 
 export class MediaContainer extends Container<Env> {
   defaultPort = 8080;
-  // A claimed job has a <=20 minute deadline. No account, DB or R2 secrets.
-  sleepAfter = '21m';
+  // Bounded processing runtime is independent of the recording length.
+  sleepAfter = '61m';
   override envVars = { REPLAY_VERSION: this.env.REPLAY_VERSION };
   async run(job: Job) {
     if (!/^[a-f0-9]{32}$/.test(job.id) || !Number.isSafeInteger(job.lease_version)
         || job.lease_version < 1 || job.version !== this.env.REPLAY_VERSION || job.mode !== 'production'
-        || job.deadline <= Date.now() / 1000 || job.deadline > Date.now() / 1000 + 1200
+        || job.deadline <= Date.now() / 1000 || job.deadline > Date.now() / 1000 + 3600
         || job.target === 'import') throw new Error('INVALID_MEDIA_JOB');
     const first = await this.ctx.blockConcurrencyWhile(async () => {
       if (await this.ctx.storage.get('started')) return false;

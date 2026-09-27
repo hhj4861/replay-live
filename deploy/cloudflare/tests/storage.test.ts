@@ -34,10 +34,14 @@ test('auth and tenant checks precede storage; bounded grants carry no control se
   assert.equal((await runtime.dispatchFetch(base + '/api/wake')).status, 404);
   assert.equal((await control('health', {}, 'invalid')).status, 401);
   assert.equal((await control('upload', { tenant_id: 'another', size: bytes.length, sha256 })).status, 400);
-  assert.equal((await control('upload', { size: 50 * 1024 ** 2 + 1, sha256 })).status, 400);
+  assert.equal((await control('upload', { size: 5 * 1024 ** 3 + 1, sha256 })).status, 400);
   const signed = await uploadGrant();
   assert.equal(signed.url.includes(token), false);
   assert.equal(new URL(signed.url).origin, base);
+  // A storage-first rollout must keep previous API/worker clients working.
+  const legacy = await control('upload', { size: 64 * 1024 ** 2, sha256 });
+  const legacyGrant = await legacy.json() as { multipart?: unknown; method: string };
+  assert.equal(legacy.status, 200); assert.equal(legacyGrant.method, 'PUT'); assert.equal(legacyGrant.multipart, undefined);
 });
 test('real R2 binding validates upload checksum, refuses overwrite, and serves range playback', async () => {
   const signed = await uploadGrant();
@@ -86,4 +90,52 @@ test('wrong bytes never become an admitted object; deletion is scoped and idempo
   assert.equal((await control('verify', { size: bytes.length, sha256: '0'.repeat(64) })).status, 409);
   assert.equal((await control('delete')).status, 200);
   assert.equal((await control('head')).status, 404);
+});
+
+test('multipart crosses 50 MiB, verifies whole-file SHA-256 and retains range playback', async () => {
+  const data = Buffer.alloc(65 * 1024 ** 2 + 17, 83);
+  const checksum = createHash('sha256').update(data).digest('hex');
+  const object = key.replace('test.mp4', 'large.mp4');
+  const response = await control('upload', { object_key: object, size: data.length, sha256: checksum });
+  const signed = await response.json() as { url: string; headers: Record<string, string>; multipart: { part_size: number } };
+  assert.equal(response.status, 200);
+  assert.equal(signed.multipart.part_size, 32 * 1024 ** 2);
+  const parts: { partNumber: number; etag: string }[] = [];
+  for (let offset = 0; offset < data.length; offset += signed.multipart.part_size) {
+    const chunk = data.subarray(offset, offset + signed.multipart.part_size);
+    const reply = await runtime.dispatchFetch(signed.url, { method: 'PUT',
+      headers: { ...signed.headers, 'Content-Length': String(chunk.length), 'X-Replay-Part': String(parts.length + 1) }, body: chunk });
+    assert.equal(reply.status, 200, await reply.clone().text()); parts.push(await reply.json() as { partNumber: number; etag: string });
+  }
+  assert.equal((await control('head', { object_key: object })).status, 404);
+  assert.deepEqual(parts.map((p: { partNumber: number }) => p.partNumber), [1, 2, 3]);
+  assert.ok(parts.every((p: { etag: string }) => typeof p.etag === 'string' && p.etag.length <= 512), JSON.stringify(parts));
+  const complete = () => runtime.dispatchFetch(signed.url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ parts }) });
+  const completed = await complete(); assert.equal(completed.status, 200, await completed.text());
+  assert.equal((await complete()).status, 200);
+  const verified = await control('verify', { object_key: object, size: data.length, sha256: checksum });
+  assert.equal(verified.status, 200, await verified.text());
+  const download = await (await control('download', { object_key: object })).json() as { url: string };
+  const range = await runtime.dispatchFetch(download.url, { headers: { Range: 'bytes=33554430-33554435' } });
+  assert.equal(range.status, 206); assert.equal(Buffer.from(await range.arrayBuffer()).equals(data.subarray(33554430, 33554436)), true);
+  const bucket = await runtime.getR2Bucket('MEDIA');
+  assert.equal((await bucket.list({ prefix: object + '.upload-' })).objects.length, 0);
+  await control('delete', { object_key: object });
+});
+
+test('multipart invalid parts and full-checksum mismatch never admit a final object', async () => {
+  const size = 64 * 1024 ** 2 + 1, object = key.replace('test.mp4', 'bad-large.mp4');
+  const signed = await (await control('upload', { object_key: object, size, sha256: '0'.repeat(64) })).json() as { url: string; headers: Record<string, string> };
+  assert.equal((await runtime.dispatchFetch(signed.url, { method: 'PUT', headers: { ...signed.headers, 'Content-Length': '1', 'X-Replay-Part': '4' }, body: 'x' })).status, 400);
+  const parts: { partNumber: number; etag: string }[] = [];
+  for (const length of [32 * 1024 ** 2, 32 * 1024 ** 2, 1]) {
+    const reply = await runtime.dispatchFetch(signed.url, { method: 'PUT', headers: { ...signed.headers,
+      'Content-Length': String(length), 'X-Replay-Part': String(parts.length + 1) }, body: Buffer.alloc(length, 5) });
+    assert.equal(reply.status, 200); parts.push(await reply.json() as { partNumber: number; etag: string });
+  }
+  const result = await runtime.dispatchFetch(signed.url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ parts }) });
+  assert.notEqual(result.status, 200);
+  const bucket = await runtime.getR2Bucket('MEDIA');
+  assert.equal(await bucket.head(object), null);
+  assert.equal((await bucket.list({ prefix: object + '.upload-' })).objects.length, 0);
 });

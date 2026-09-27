@@ -15,6 +15,7 @@ import MemberManagement from './member-management';
 import { canManageMembers, type Account } from '@/lib/member-management';
 import { createMediaSelection } from './media-selection';
 import { createStudioConfigCache, sourceDurationFailure, storageBreakdown } from '@/lib/studio-data';
+import { uploadObject, type ObjectUpload } from '@/lib/object-upload';
 import LocalImportFailure, { type ImportFailure } from './local-import-failure';
 import SourceLinkHelp from './source-link-help';
 import './commercial-studio.css';
@@ -406,7 +407,7 @@ export default function CommercialHome() {
   async function sendUpload(file: File, identity: string, kind: 'upload' | 'import', signal?: AbortSignal, expectedDigest?: string) {
     const check = () => { assertSessionIdentity(identity); signal?.throwIfAborted(); };
     check();
-    if (!health || !file.name.toLowerCase().endsWith('.mp4') || !file.size || file.size > health.max_upload_mb * 1024 ** 2) throw new Error('허용 크기 이내의 MP4 파일을 선택하세요.');
+    if (!health || !file.name.toLowerCase().endsWith('.mp4') || !file.size || (health.max_upload_mb > 0 && file.size > health.max_upload_mb * 1024 ** 2) || (!!usage && file.size > usage.storage_available_bytes)) throw new Error('허용 크기 이내의 MP4 파일을 선택하세요.');
     const selection = mediaSelection.begin(identity);
     setMediaId(''); setPreview(null); setConfirmed(false); setImportId(''); setPreparationKind(kind);
     setUploadProgress(0);
@@ -421,22 +422,11 @@ export default function CommercialHome() {
     let uploadedBytes = !!id;
     try {
       if (!id) {
-        const result = await api<{ media: Media; upload: Signed }>('/uploads', { method: 'POST', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: file.name, bytes: file.size, sha256: digest }) });
+        const result = await api<{ media: Media; upload: ObjectUpload }>('/uploads', { method: 'POST', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: file.name, bytes: file.size, sha256: digest }) });
         id = result.media.id;
         check();
-        await new Promise<void>((resolve, reject) => {
-          const xhr = new XMLHttpRequest(); xhr.open(result.upload.method, result.upload.url); xhr.timeout = 15 * 60_000;
-          uploading.current = xhr;
-          const abort = () => xhr.abort();
-          signal?.addEventListener('abort', abort, { once: true });
-          xhr.onloadend = () => signal?.removeEventListener('abort', abort);
-          for (const [key, value] of Object.entries(result.upload.headers)) if (key.toLowerCase() !== 'content-length') xhr.setRequestHeader(key, value);
-          xhr.upload.onprogress = event => { if (identity === sessionIdentity() && event.lengthComputable) setUploadProgress(event.loaded / event.total * 100); };
-          xhr.onload = () => xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error('업로드에 실패했습니다. 다시 시도하세요.'));
-          xhr.onerror = xhr.ontimeout = () => reject(new Error('업로드 연결이 끊겼습니다. 다시 시도하세요.'));
-          xhr.onabort = () => reject(new DOMException('영상 업로드가 취소되었습니다.', 'AbortError'));
-          xhr.send(file);
-        }).finally(() => { uploading.current = null; });
+        await uploadObject(file, result.upload, { check, signal, progress: setUploadProgress,
+          active: xhr => { uploading.current = xhr; } });
         check(); uploadedBytes = true;
         pendingUpload.current = { id, digest };
       }
@@ -608,7 +598,7 @@ export default function CommercialHome() {
           <Input id="source-url" type="url" autoComplete="off" autoCapitalize="none" spellCheck={false} required maxLength={4096}
             aria-describedby={health ? 'source-link-limits' : undefined} placeholder={sourceProvider === 'direct' ? 'https://…/recording.mp4' : 'https://…'}
             value={sourceUrl} disabled={!!busy || importPending} onChange={event => setSourceUrl(event.target.value)} />
-          {health && <p id="source-link-limits" className="source-link-limits">최대 {clock(Math.min(health.max_duration_seconds, 120)).replace(/ 0초$/, '')} · {Math.min(health.max_upload_mb, 50)} MB</p>}
+          {health && <p id="source-link-limits" className="source-link-limits">{[health.max_duration_seconds > 0 ? `최대 ${clock(health.max_duration_seconds)}` : '', health.max_upload_mb > 0 ? `${health.max_upload_mb} MB` : '보관함의 남은 공간까지'].filter(Boolean).join(' · ')}</p>}
           <details className="studio-optional-field"><summary><span>{sourceName.trim() ? `보관함 이름: ${sourceName.trim()}` : '보관함 이름 지정'}</span><ChevronDown size={14} aria-hidden="true" /></summary>
             <label className="sr-only" htmlFor="source-name">보관함 이름</label>
             <Input id="source-name" maxLength={180} placeholder="비워두면 자동으로 이름을 정해요" value={sourceName} disabled={!!busy || importPending}
@@ -623,7 +613,7 @@ export default function CommercialHome() {
             onRetry={() => void importSource()} onUpload={() => { setSourceMode('file'); setImportFailure(null); }} />}
           {!sourceCatalog && <p className="hint failure">원본 플랫폼 목록을 불러오지 못했습니다.<button type="button" className="source-retry-link" disabled={!!busy} onClick={() => void action('reconnect', refresh)}>다시 불러오기</button></p>}
         </form> : <div className="source-file-upload"><span className="studio-upload-symbol"><Upload size={27} /></span><h3>기기에 저장된 영상으로 시작</h3><p>원본 MP4 파일을 선택해 주세요.</p>
-          <p className="hint">MP4 · 최대 {health?.max_upload_mb ?? '—'} MB{health ? ` · ${clock(health.max_duration_seconds)} 이내` : ''}</p>
+          <p className="hint">MP4 · {health?.max_upload_mb ? `최대 ${health.max_upload_mb} MB` : '보관함의 남은 공간까지'}{health && health.max_duration_seconds > 0 ? ` · ${clock(health.max_duration_seconds)} 이내` : ''}</p>
           <Button variant="outline" disabled={!canOperate || !!busy || !connected || !health || importPending} onClick={() => picker.current?.click()}><Upload size={16} />{busy === 'upload' ? `${Math.round(uploadProgress)}% 업로드 중` : 'MP4 파일 선택'}</Button>
         </div>}
         <input type="file" ref={picker} accept=".mp4,video/mp4" hidden onChange={event => void upload(event.target.files?.[0])} />

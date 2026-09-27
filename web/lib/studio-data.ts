@@ -20,6 +20,7 @@ export function storageBreakdown(usage: { storage_bytes: number; storage_reserve
 }
 
 export function sourceDurationFailure(seconds?: number) {
+  if (seconds === 0) return '이전에 설정된 영상 길이 제한으로 중단된 작업입니다. 다시 가져오세요.';
   if (!seconds || !Number.isFinite(seconds) || seconds <= 0) return '영상이 허용 재생 시간을 초과합니다. 더 짧은 녹화 영상을 선택하세요.';
   return `가져올 수 있는 영상은 최대 ${Math.floor(seconds / 60)}분 ${Math.floor(seconds % 60)}초입니다. 이보다 짧은 영상을 선택하세요.`;
 }
