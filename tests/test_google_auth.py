@@ -11,7 +11,7 @@ from fastapi import HTTPException
 import httpx
 import jwt
 import pytest
-from sqlalchemy import create_engine, func, inspect, select, text, update
+from sqlalchemy import create_engine, event, func, inspect, select, text, update
 
 from deploy.commercial import ops
 from server.google_auth import (
@@ -221,6 +221,49 @@ def test_active_policy_account_disable_and_database_roles_apply_immediately(harn
         auth.logout(authorization)  # Disabled/removed accounts can still discard their token.
         with auth.engine.connect() as connection:
             assert connection.execute(select(families.c.revoked)).scalar_one() is True
+
+    asyncio.run(scenario())
+
+
+def test_authentication_uses_one_read_and_rechecks_revocation(harness, key):
+    auth, _, _ = harness
+
+    async def scenario():
+        session = await login(auth, key)
+        statements = []
+        def observe(conn, cursor, statement, parameters, context, executemany):
+            statements.append(statement)
+        event.listen(auth.engine, 'before_cursor_execute', observe)
+        try:
+            assert (await auth.authenticate('Bearer ' + session['token'])).has_role('operator')
+        finally:
+            event.remove(auth.engine, 'before_cursor_execute', observe)
+        assert len(statements) == 1 and statements[0].lstrip().upper().startswith('SELECT')
+        assert 'FOR UPDATE' not in statements[0].upper()
+        auth.logout('Bearer ' + session['token'])
+        with pytest.raises(HTTPException) as revoked:
+            await auth.authenticate('Bearer ' + session['token'])
+        assert revoked.value.status_code == 401
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('invalid', ['session_expired', 'absolute_expired', 'family_expired', 'retired'])
+def test_read_only_authentication_keeps_every_session_deadline(harness, key, invalid):
+    auth, now, _ = harness
+
+    async def scenario():
+        session = await login(auth, key)
+        with auth.engine.begin() as connection:
+            if invalid == 'family_expired':
+                connection.execute(update(families).values(absolute_expires_at=now[0]))
+            else:
+                values = {'session_expired': {'expires_at': now[0]},
+                          'absolute_expired': {'absolute_expires_at': now[0]}, 'retired': {'retired': True}}[invalid]
+                connection.execute(update(sessions).values(**values))
+        with pytest.raises(HTTPException) as expired:
+            await auth.authenticate('Bearer ' + session['token'])
+        assert expired.value.status_code == 401
 
     asyncio.run(scenario())
 
