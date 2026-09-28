@@ -1,9 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, CalendarClock, Check, CheckCircle2, ChevronDown, CircleHelp, Clock3, Library, Pause, Play, Plus, Radio, Trash2, Video } from 'lucide-react';
+import { ArrowLeft, CalendarClock, Check, CheckCircle2, ChevronDown, CircleHelp, Clock3, KeyRound, Library, Pause, Play, Plus, Radio, Trash2, Video } from 'lucide-react';
 import { api, API_BASE } from '@/lib/api';
 import { Button } from '@/components/ui/button';
+import { PlatformMark } from './platform-picker';
 import './automation.css';
 
 type Media = { id: string; name: string; status: string };
@@ -144,7 +145,24 @@ export default function AutomationPanel({ media, onBack, onManageConnections, on
               <div className="automation-time"><label>송출 시간<input type="time" required disabled={busy} value={time} onChange={event => setTime(event.target.value)} /></label><label>시간대<select aria-label="시간대" required disabled={busy} value={zone} onChange={event => setZone(event.target.value)}>{!zones[zone] && <option value={zone}>{zone}</option>}{Object.entries(zones).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></div>
             </section>
             <section className="automation-form-section" aria-labelledby="automation-target-title"><h2 id="automation-target-title"><Radio size={19} aria-hidden="true" />송출 플랫폼</h2>
-              <fieldset className="automation-targets" disabled={busy}><legend className="sr-only">저장한 송출 플랫폼</legend>{data.connections?.length ? <><p>연결한 플랫폼을 선택하세요.</p><div>{data.connections.map(item => <label key={item.target}><input type="checkbox" aria-label={platforms[item.target] || item.target} checked={targets.includes(item.target)} onChange={() => setTargets(toggle(targets, item.target))} /><span>{platforms[item.target] || item.target}</span><Check size={16} aria-hidden="true" /></label>)}</div></> : <div className="automation-setup"><p>방송할 채널을 먼저 연결해 주세요.<br />한 번 연결하면 다음 예약에도 사용할 수 있어요.</p><Button className="automation-button" variant="outline" type="button" onClick={onManageConnections}><Plus size={16} />내 계정에서 연결하기</Button></div>}</fieldset>
+              <fieldset className="automation-targets channel-picker" disabled={busy} aria-describedby="automation-platform-hint">
+                <legend className="sr-only">저장한 송출 플랫폼</legend>
+                {data.connections?.length ? <>
+                  <div className="channel-picker-heading"><p id="automation-platform-hint">방송할 플랫폼을 선택하세요.</p><span className="channel-selection-count" aria-live="polite"><strong>{targets.length}</strong><span>개 선택</span></span></div>
+                  <div className="channel-grid">{data.connections.map(item => {
+                    const selected = targets.includes(item.target);
+                    return <label key={item.target} className={`channel-option${selected ? ' is-selected' : ''}`}>
+                      <input type="checkbox" aria-label={platforms[item.target] || item.target} checked={selected} onChange={() => setTargets(toggle(targets, item.target))} />
+                      <PlatformMark id={item.target} />
+                      <span className="channel-option-copy"><span className="channel-option-name">{platforms[item.target] || item.target}</span>
+                        <span className="channel-option-action">{selected ? '선택됨' : '선택하기'}</span>
+                        <span className="channel-key-saved"><KeyRound size={11} aria-hidden="true" />연결 저장됨</span>
+                      </span>
+                      <span className="channel-option-indicator" aria-hidden="true">{selected ? <Check size={13} strokeWidth={3} /> : <Plus size={14} />}</span>
+                    </label>;
+                  })}</div>
+                </> : <div className="automation-setup"><p id="automation-platform-hint">방송할 채널을 먼저 연결해 주세요.<br />한 번 연결하면 다음 예약에도 사용할 수 있어요.</p><Button className="automation-button" variant="outline" type="button" onClick={onManageConnections}><Plus size={16} />내 계정에서 연결하기</Button></div>}
+              </fieldset>
             </section>
           </div>
           <div className="automation-actions"><p id="automation-submit-hint">{unavailable || `${repeatLabel(weekdays)} ${time}, 선택한 플랫폼으로 자동 송출해요.`}</p><div><Button className="automation-button automation-secondary" type="button" variant="ghost" disabled={busy} onClick={() => { setCreating(false); heading.current?.focus(); }}>취소</Button><Button className="automation-button automation-primary" type="submit" aria-describedby="automation-submit-hint" disabled={busy || !!unavailable}><CalendarClock size={17} />{busy ? '저장 중…' : '자동 송출 시작'}</Button></div></div>
