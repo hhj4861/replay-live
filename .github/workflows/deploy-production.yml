@@ -1,0 +1,56 @@
+name: Deploy Replay production
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: replay-production
+  cancel-in-progress: false
+jobs:
+  commercial:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/commercial.yml
+  cloudflare:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/cloudflare.yml
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: [commercial, cloudflare]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment:
+      name: production
+      url: https://replay-live-poc.vercel.app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Check deployment credential
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: test -n "$VERCEL_TOKEN" || { echo 'VERCEL_TOKEN secret is required'; exit 1; }
+      - name: Install pinned deployment tools
+        run: |
+          npm ci --prefix web --ignore-scripts
+          npm install --global vercel@60.1.3
+      - name: Build worker, stage API and web, promote and verify
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          REPLAY_FFMPEG_PACKAGE_VERSION: '7:8.0.1-3ubuntu2'
+        run: python scripts/deploy-production.py --execute --report release-artifacts/production.json
+      - name: Preserve release and rollback evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: replay-production-${{ github.sha }}-${{ github.run_attempt }}
+          path: release-artifacts/production.json
+          if-no-files-found: ignore
+          retention-days: 30
