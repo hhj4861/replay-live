@@ -145,6 +145,13 @@ def cancel_preview_jobs(repo):
         repo.cancel(tenant_id, job_id)
 
 
+def preview_settings(scratch, api, web):
+    return Settings(mode='development', database_url='sqlite:///' + str(scratch / 'preview.sqlite3'),
+        public_url=api, origins=(web,), control_token=secrets.token_urlsafe(32), callback_key=secrets.token_urlsafe(32),
+        version='local-preview', max_duration=0, max_upload_bytes=0, max_storage_bytes=256 * 1024**2,
+        local_root=str(scratch))
+
+
 def preview_build_files(scratch, api, *, google=False, platform_live=False):
     """Keep Google auth intact; use an exact auth override only in development."""
     config = scratch / 'preview.vite.config.mjs'
@@ -286,10 +293,7 @@ def main():
         require_free_ports((args.api_port, args.web_port))
         scratch_dir = tempfile.TemporaryDirectory(prefix='replay-local-preview-')
         scratch = Path(scratch_dir.name)
-        cfg = Settings(mode='development', database_url='sqlite:///' + str(scratch / 'preview.sqlite3'),
-            public_url=api, origins=(web,), control_token=secrets.token_urlsafe(32), callback_key=secrets.token_urlsafe(32),
-            version='local-preview', validation_timeout=45, max_duration=120, max_storage_bytes=20 * 1024**2,
-            local_root=str(scratch))
+        cfg = preview_settings(scratch, api, web)
         repo = Repository(cfg.database_url, create_schema=True, max_storage_bytes=cfg.max_storage_bytes,
                           max_output_bytes=cfg.max_output_bytes, validation_duration=cfg.validation_timeout,
                           tenant_concurrency=cfg.tenant_concurrency, global_concurrency=cfg.global_concurrency)

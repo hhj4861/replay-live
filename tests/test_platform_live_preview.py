@@ -52,7 +52,7 @@ def test_shared_preview_session_contract_and_exact_origin():
         assert client.post('/preview/session', headers={'X-Replay-Client': '0'}).status_code == 403
         status = client.get('/preview/status').json()
         assert status['sequential'] and not status['external_streaming']
-        assert status['storage_limit_bytes'] == 1024**3 and status['max_duration_seconds'] == 120
+        assert status['storage_limit_bytes'] == 1024**3 and status['max_duration_seconds'] == 0
 
 
 @pytest.mark.parametrize('allowed', [frozenset({'local'}), frozenset({'local', 'twitch'})])
@@ -147,7 +147,8 @@ def test_persistent_private_keys_media_and_cancelled_old_jobs(tmp_path):
         assert data.stat().st_mode & 0o777 == 0o700
         assert (data / 'keys.json').stat().st_mode & 0o777 == 0o600
         assert (data / 'platform-test.sqlite3').stat().st_mode & 0o777 == 0o600
-        assert second.cfg.max_storage_bytes == 1024**3 and second.cfg.max_duration == 120
+        assert second.cfg.max_storage_bytes == 1024**3 and second.cfg.max_duration == 0
+        assert second.cfg.max_upload_bytes == 0
         assert second.repo.tenant_concurrency == second.repo.global_concurrency == 1
     finally:
         second.repo.close()
@@ -168,6 +169,22 @@ def test_keys_missing_or_insecure_never_regenerated(tmp_path):
     (linked / 'keys.json').symlink_to(other / 'keys.json')
     with pytest.raises(live.LivePreviewError):
         live.persistent_keys(linked)
+
+
+def test_live_preview_validates_real_video_longer_than_two_minutes(tmp_path):
+    sample = tmp_path / 'long.mp4'
+    subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i',
+        'color=c=blue:s=320x180:r=5', '-f', 'lavfi', '-i', 'sine=frequency=440', '-t', '125',
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', str(sample)],
+        check=True, capture_output=True, timeout=30)
+    runtime = live.build_application(tmp_path / 'long-video')
+    try:
+        media_id = live.seed_sample(runtime, sample)
+        item = runtime.repo.get_media(live.TENANT, media_id)
+        assert item['status'] == 'ready' and item['duration'] >= 125
+        assert runtime.repo.usage(live.TENANT)['storage_bytes'] == sample.stat().st_size
+    finally:
+        runtime.repo.close()
 
 
 def test_hosts_restored_after_pin_and_previous_crash(tmp_path):
