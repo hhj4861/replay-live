@@ -3,10 +3,11 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 concurrency:
-  group: commercial-${{ github.ref }}
+  group: commercial-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   verify:
