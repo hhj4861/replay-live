@@ -115,6 +115,19 @@ test('only exact loopback page hosts select browser storage', () => {
   for (const hostname of ['studio.example.com', 'localhost.example.com', 'studio.localhost', '127.0.0.2']) assert.equal(environment({ hostname }).streamConnectionLocation(), 'account');
 });
 
+test('local automation explicitly uses account storage without copying browser secrets', async () => {
+  const env = environment();
+  env.useNetwork(() => []);
+  const store = await env.createStreamConnectionStore(ownerA, undefined, 'account');
+  assert.equal(store.location, 'account');
+  assert.deepEqual(plain(await store.list()), []);
+  assert.equal(env.indexedDB.opens, 0);
+  assert.equal(env.calls[0].url, '/stream-connections');
+  env.setIdentity('replacement');
+  await assert.rejects(store.list(), /계정이 변경/);
+  assert.equal(env.calls.length, 1);
+});
+
 test('local save encrypts URL and key, persists a nonextractable AES key, and only explicit use returns the secret', async () => {
   const decryptedFields = [];
   const crypto = { getRandomValues: values => webcrypto.getRandomValues(values), subtle: {

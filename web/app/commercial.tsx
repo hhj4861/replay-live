@@ -12,6 +12,7 @@ import GoogleSignIn from './google-sign-in';
 import PlatformPicker, { broadcastDestination, destinationReady, type StreamTarget, type Destination } from './platform-picker';
 import BroadcastWatchLinks, { type BroadcastLinks } from './broadcast-watch-links';
 import MemberManagement from './member-management';
+import AutomationPanel from './automation-panel';
 import { canManageMembers, type Account } from '@/lib/member-management';
 import { createMediaSelection } from './media-selection';
 import { createStudioConfigCache, sourceDurationFailure, storageBreakdown } from '@/lib/studio-data';
@@ -266,7 +267,13 @@ export default function CommercialHome() {
     let timer: ReturnType<typeof setTimeout>;
     async function initialize() {
       try {
-        const store = await createStreamConnectionStore(connectionOwner!, connectionOwner!.identity);
+        let location = streamConnectionLocation();
+        if (location === 'browser') {
+          const automations = await api<{ enabled: boolean }>('/automations', { signal: AbortSignal.timeout(10000) });
+          if (automations.enabled) location = 'account';
+        }
+        if (!active) return;
+        const store = await createStreamConnectionStore(connectionOwner!, connectionOwner!.identity, location);
         if (!active) return;
         connectionStoreRef.current = store; setConnectionStore(store);
         const poll = async () => {
@@ -637,6 +644,7 @@ export default function CommercialHome() {
       </div></section>
     </form></div></div>
     </>}
+    {canOperate && <AutomationPanel key={sessionIdentity()} media={media} />}
     <section className="studio-history" id="broadcast-history" aria-labelledby="history-title"><div className="studio-history-heading"><div><h2 id="history-title">방송 이력 <span>{jobs.length}</span></h2><p>전송 완료는 플랫폼의 공개·다시보기 저장 확인을 뜻하지 않습니다.</p></div><fieldset className="studio-history-filters"><legend className="sr-only">방송 이력 필터</legend>{([{ id: 'all', label: '전체' }, { id: 'active', label: '진행 중' }, { id: 'finished', label: '종료' }] as const).map(filter => <button type="button" key={filter.id} aria-pressed={historyFilter === filter.id} onClick={() => setHistoryFilter(filter.id)}>{filter.label}</button>)}</fieldset></div>
       {visibleJobs.length ? <div className="studio-job-list">{visibleJobs.map(job => <article key={job.id} className="studio-job">
         <span className="studio-job-icon"><Radio size={19} /></span>

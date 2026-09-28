@@ -44,6 +44,7 @@ from .stream_targets import StreamTargetError, platform_metadata, validate_desti
 from .stream_connections import StreamConnections
 from .watch_links import WatchLinkError, normalize_watch_links
 from .device_imports import install_device_imports
+from .automations import install_automations
 
 
 class UploadIntent(BaseModel):
@@ -180,6 +181,7 @@ def create_production_app(settings=None, *, repository=None, storage=None, keys=
         if isinstance(objects, VercelBlobStorage):
             objects.close()
         wakeup.close()
+        close_automations()
 
     app = FastAPI(title='Replay Live', version=cfg.version, lifespan=lifespan,
                   docs_url=None if cfg.mode == 'production' else '/docs', redoc_url=None)
@@ -786,11 +788,13 @@ def create_production_app(settings=None, *, repository=None, storage=None, keys=
             await objects.put_stream(tenant_id, key, request.stream(), **constraints)
             return {'status': 'uploaded'}
 
+    close_automations = install_automations(app, cfg, repo, secrets, stream_connections, objects,
+                                            writer, control, policy, notify_dispatch)
     expire_device_imports = install_device_imports(app, cfg, repo, objects, secrets, policy, writer, public_media,
                            upload_complete, notify_dispatch, auth)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=[urlsplit(cfg.public_url).hostname, 'testserver'] if cfg.mode == 'development' else [urlsplit(cfg.public_url).hostname])
     app.add_middleware(BoundaryMiddleware, max_body_bytes=max(cfg.max_upload_bytes, cfg.max_output_bytes) if cfg.mode == 'development' else 16384,
-                       path_limits={'/api/uploads': 4096, '/api/media/imports': 8192, '/api/broadcasts': 8192, '/api/broadcast-batches': 49152,
+                       path_limits={'/api/automations': 4096, '/api/youtube-channel/connect': 1024, '/api/uploads': 4096, '/api/media/imports': 8192, '/api/broadcasts': 8192, '/api/broadcast-batches': 49152,
                                     **{f'/api/stream-connections/{target}': 8192 for target in ('youtube', 'twitch', 'facebook', 'instagram', 'tiktok', 'naver', 'chzzk', 'kick', 'custom')},
                                     **{f'/api/stream-connections/{target}/use': 1024 for target in ('youtube', 'twitch', 'facebook', 'instagram', 'tiktok', 'naver', 'chzzk', 'kick', 'custom')},
                                     '/api/auth/google/challenge': 1024, '/api/auth/google/exchange': 16384,
