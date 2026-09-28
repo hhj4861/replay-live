@@ -31,6 +31,10 @@ const request = async (path, options = {}) => {
   return response.json();
 };
 const report = { headless: true, local_only: true, external_streaming: false, checks: [] };
+const capture = async name => {
+  if (process.env.REPLAY_E2E_SCREENSHOT) await page.screenshot({
+    path: process.env.REPLAY_E2E_SCREENSHOT.replace(/\.png$/, `-${name}.png`), fullPage: true });
+};
 let ruleId;
 try {
   await page.goto(web);
@@ -50,7 +54,16 @@ try {
   assert.equal(await page.locator('.studio-launch-dock').count(), 0);
   assert.equal(await page.getByRole('heading', { name: '방송 이력', exact: true }).count(), 0);
   report.checks.push('automation opens from top-level menu without manual broadcast controls');
+  assert.equal(await panel.getByRole('button', { name: '일정 만들기', exact: true }).count(), 1);
+  await capture('empty');
+  const help = panel.getByLabel('자동 송출 도움말');
+  await help.focus();
+  await help.press('Enter');
+  assert.equal(await panel.locator('.automation-help').getAttribute('open'), '');
+  await help.press('Enter');
+  report.checks.push('one clear create action and keyboard-operable collapsed guidance');
   await panel.getByRole('button', { name: '일정 만들기', exact: true }).click();
+  assert.equal(await panel.getByLabel('일정 이름', { exact: true }).evaluate(element => element === document.activeElement), true);
   await panel.getByLabel('일정 이름', { exact: true }).fill('매주 신제품 E2E');
   await panel.getByLabel('내 YouTube 최신 영상', { exact: true }).check();
   await panel.getByText('새 공개 영상이 있을 때만 송출해요.', { exact: true }).waitFor();
@@ -63,11 +76,12 @@ try {
   await panel.getByLabel('보관함 영상', { exact: true }).selectOption(ready.id);
   await panel.getByRole('checkbox', { name: 'YouTube', exact: true }).check();
   await panel.getByLabel('송출 시간', { exact: true }).fill('18:00');
-  await panel.getByLabel('시간대', { exact: true }).fill('Invalid/TestZone');
-  await panel.getByRole('button', { name: '자동 송출 시작', exact: true }).click();
-  await panel.getByRole('alert').filter({ hasText: '올바른 시간대를 선택해 주세요.' }).waitFor();
-  report.checks.push('invalid schedule shows actionable API error');
-  await panel.getByLabel('시간대', { exact: true }).fill('Asia/Seoul');
+  await panel.getByLabel('시간대', { exact: true }).selectOption({ label: '한국 시간 (서울)' });
+  assert.equal(await panel.getByLabel('시간대', { exact: true }).inputValue(), 'Asia/Seoul');
+  const buttons = await panel.locator('.automation-button').evaluateAll(elements => elements.map(element => element.getBoundingClientRect().height));
+  assert.ok(buttons.every(height => height >= 44));
+  await capture('form-desktop');
+  report.checks.push('friendly timezone selection, focused creation form and 44px action targets');
   await panel.getByRole('button', { name: '자동 송출 시작', exact: true }).click();
   await panel.getByRole('heading', { name: '매주 신제품 E2E', exact: true }).waitFor();
   const stored = await request('/automations');
@@ -77,6 +91,7 @@ try {
   assert.equal(rule.timezone, 'Asia/Seoul');
   ruleId = rule.id;
   report.checks.push('form saves source, recurrence and destination in API database');
+  await capture('list-desktop');
   await page.reload();
   await panel.getByRole('heading', { name: '자동 송출', level: 1, exact: true }).waitFor();
   assert.equal(await page.locator('#broadcast-form').count(), 0);
@@ -90,6 +105,7 @@ try {
   await panel.scrollIntoViewIfNeeded();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   report.checks.push('mobile layout has no horizontal overflow');
+  await capture('list-mobile');
   await panel.getByRole('button', { name: '매주 신제품 E2E 다시 시작', exact: true }).click();
   await panel.getByRole('button', { name: '매주 신제품 E2E 일시중지', exact: true }).waitFor();
   await panel.getByRole('button', { name: '매주 신제품 E2E 삭제', exact: true }).click();
@@ -109,8 +125,9 @@ try {
   await panel.getByRole('checkbox', { name: 'YouTube', exact: true }).check();
   const due = new Date(Date.now() + 120000);
   await panel.getByLabel('송출 시간', { exact: true }).fill(due.toISOString().slice(11, 16));
-  await panel.getByLabel('시간대', { exact: true }).fill('UTC');
+  await panel.getByLabel('시간대', { exact: true }).selectOption('UTC');
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await capture('form-mobile');
   report.checks.push('mobile creation form has no horizontal overflow');
   await panel.getByRole('button', { name: '자동 송출 시작', exact: true }).click();
   await panel.getByRole('heading', { name: '예약 실행 E2E', exact: true }).waitFor();
