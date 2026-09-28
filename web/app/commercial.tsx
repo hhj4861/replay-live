@@ -575,9 +575,8 @@ export default function CommercialHome() {
         if (identity === sessionIdentity() && (!revoked || !signedOut)) setError('이 기기에서는 로그아웃했습니다. 서버나 로그인 제공자의 세션 종료는 확인하지 못했습니다.');
       });
     }}>로그아웃</Button></div></header>
-    {managementView === 'automations' && canOperate ? <AutomationPanel key={sessionIdentity()} media={media}
+    {managementView === 'automations' && canOperate ? <AutomationPanel key={sessionIdentity()} media={media} platformChoices={catalog?.targets || []}
       onBack={() => { setManagementView(''); window.location.hash = 'studio-top'; }}
-      onManageConnections={() => { setManagementView('account'); window.location.hash = 'account'; }}
       onPrepareMedia={() => { setManagementView(''); window.location.hash = 'source-title'; }} />
       : managementView && managementView !== 'automations' && account && connectionOwner ? <MemberManagement key={`${connectionOwner.identity}:${connectionOwner.tenant_id}:${connectionOwner.subject}:${managementView}`}
       mode={managementView} identity={connectionOwner.identity} account={account} targets={catalog?.targets || []}

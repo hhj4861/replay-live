@@ -2,16 +2,24 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, CalendarClock, Check, CheckCircle2, ChevronDown, CircleHelp, Clock3, KeyRound, Library, Pause, Play, Plus, Radio, Trash2, Video } from 'lucide-react';
-import { api, API_BASE } from '@/lib/api';
+import { api, API_BASE, sessionIdentity, assertSessionIdentity } from '@/lib/api';
+import { Popover, PopoverTrigger, PopoverContent, PopoverTitle } from '@/components/ui/popover';
 import { Button } from '@/components/ui/button';
-import { PlatformMark } from './platform-picker';
+import { PlatformMark, type StreamTarget } from './platform-picker';
+import ConnectionEditor from './connection-editor';
+import type { StreamConnectionMetadata, StreamConnectionValue } from '@/lib/stream-connections';
+import './member-management.css';
 import './automation.css';
 
-type Media = { id: string; name: string; status: string };
+type Media = { id: string; name: string; status: string; duration?: number; bytes?: number };
+function mediaDetails(item: Media) {
+  const seconds = Math.max(0, Math.floor(item.duration || 0));
+  return `${Math.floor(seconds / 60)}분 ${seconds % 60}초 · ${((item.bytes || 0) / 1048576).toFixed(1)} MiB`;
+}
 type Run = { id: string; state: string; scheduled_for: number; error_code: string | null };
 type Schedule = { id: string; name: string; enabled: boolean; active: boolean; next_run: number;
   source: string; time: string; timezone: string; weekdays: number[]; targets: string[]; history: Run[] };
-type Data = { enabled: boolean; items: Schedule[]; connections?: { target: string }[];
+type Data = { enabled: boolean; items: Schedule[]; connections?: StreamConnectionMetadata[];
   youtube?: { configured: boolean; connected: boolean; channel: { title: string } | null } };
 const days = ['월', '화', '수', '목', '금', '토', '일'];
 const zones: Record<string, string> = { 'Asia/Seoul': '한국 시간 (서울)', 'Asia/Tokyo': '일본 시간 (도쿄)',
@@ -38,10 +46,16 @@ const failures: Record<string, string> = {
   BROADCAST_FAILED: '방송 이력에서 실패한 플랫폼을 확인해 주세요.', IMPORT_FAILED: '원본 영상을 가져오지 못했습니다.',
 };
 
-export default function AutomationPanel({ media, onBack, onManageConnections, onPrepareMedia }: {
-  media: Media[]; onBack: () => void; onManageConnections: () => void; onPrepareMedia: () => void;
+export default function AutomationPanel({ media, platformChoices, onBack, onPrepareMedia }: {
+  media: Media[]; platformChoices: StreamTarget[]; onBack: () => void; onPrepareMedia: () => void;
 }) {
   const [data, setData] = useState<Data | null>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [addingPlatform, setAddingPlatform] = useState(false);
+  const [savingPlatform, setSavingPlatform] = useState(false);
+  const platformSaving = useRef(false);
+  const platformDialog = useRef<HTMLDialogElement>(null);
+  const identity = sessionIdentity();
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -85,6 +99,30 @@ export default function AutomationPanel({ media, onBack, onManageConnections, on
     window.addEventListener('message', connected);
     return () => window.removeEventListener('message', connected);
   }, [refresh]);
+  useEffect(() => {
+    const dialog = platformDialog.current;
+    if (addingPlatform) dialog?.showModal();
+    else dialog?.close();
+  }, [addingPlatform]);
+  async function savePlatform(target: string, value: StreamConnectionValue) {
+    assertSessionIdentity(identity);
+    platformSaving.current = true; setSavingPlatform(true);
+    try {
+      const saved = await api<StreamConnectionMetadata>(`/stream-connections/${target}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value),
+        signal: AbortSignal.timeout(12000),
+      });
+      assertSessionIdentity(identity);
+      if (!alive.current) return;
+      // Invalidate older polling responses so a newly saved connection cannot disappear.
+      refreshVersion.current += 1;
+      setData(current => current ? { ...current, connections: [...(current.connections || []).filter(item => item.target !== target), saved] } : current);
+      setTargets(current => current.includes(target) ? current : [...current, target]);
+    } finally {
+      platformSaving.current = false;
+      if (alive.current) setSavingPlatform(false);
+    }
+  }
   async function action(work: () => Promise<unknown>) {
     setBusy(true); setError(''); setNotice('');
     try { await work(); await refresh(); }
@@ -104,7 +142,7 @@ export default function AutomationPanel({ media, onBack, onManageConnections, on
   const ready = media.filter(item => item.status === 'ready');
   const toggle = <T,>(values: T[], value: T) => values.includes(value) ? values.filter(item => item !== value) : [...values, value];
   const unavailable = !targets.length ? '송출할 플랫폼을 선택해 주세요.' : !weekdays.length ? '반복할 요일을 선택해 주세요.'
-    : source === 'media' ? (!mediaId ? '보관함에서 영상을 선택해 주세요.' : '')
+    : source === 'media' ? (!ready.some(item => item.id === mediaId) ? '보관함에서 영상을 선택해 주세요.' : '')
       : !data?.youtube?.connected ? '먼저 내 YouTube 채널을 연결해 주세요.' : '';
   const activeCount = data?.items.filter(item => item.enabled).length || 0;
   const createButton = <Button className="automation-button automation-primary" disabled={busy} onClick={() => { setError(''); setNotice(''); setCreating(true); }}><Plus size={18} />일정 만들기</Button>;
@@ -118,9 +156,16 @@ export default function AutomationPanel({ media, onBack, onManageConnections, on
       {notice && <output className="automation-notice"><CheckCircle2 size={18} aria-hidden="true" />{notice}</output>}
       {!data ? <output className="automation-loading">일정을 불러오고 있어요…</output> : !data.enabled ? <p className="automation-loading">자동 송출을 사용할 수 없는 환경입니다.</p> : <>
         <div className="automation-toolbar"><div className="automation-count"><CalendarClock size={18} aria-hidden="true" /><strong>{creating ? '새 일정' : '내 송출 일정'}</strong>{!creating && <span>{activeCount}개 예약 중</span>}</div>
-          <details className="automation-help"><summary aria-label="자동 송출 도움말"><CircleHelp size={17} aria-hidden="true" />이용 안내<ChevronDown size={15} aria-hidden="true" /></summary>
-            <div><p>예약은 저장한 플랫폼 연결로 실행돼요. 플랫폼의 라이브 시작·공개 설정도 확인해 주세요.</p><p>일시중지는 다음 방송부터 적용돼요. 이미 시작한 방송은 방송 이력에서 중단할 수 있어요.</p><p>로컬 테스트 중에는 이 컴퓨터의 실행 프로그램을 켜 두세요.</p></div>
-          </details></div>
+          <Popover open={helpOpen} onOpenChange={setHelpOpen}>
+            <PopoverTrigger className="automation-help-trigger" aria-label="자동 송출 도움말"><CircleHelp size={17} aria-hidden="true" />이용 안내</PopoverTrigger>
+            <PopoverContent className="automation-help-popup" align="end" sideOffset={8} aria-label="자동 송출 이용 안내">
+              <PopoverTitle>자동 송출 이용 안내</PopoverTitle>
+              <p>예약은 저장한 플랫폼 연결로 실행돼요. 플랫폼의 라이브 시작·공개 설정도 확인해 주세요.</p>
+              <p>일시중지는 다음 방송부터 적용돼요. 이미 시작한 방송은 방송 이력에서 중단할 수 있어요.</p>
+              <p>로컬 테스트 중에는 이 컴퓨터의 실행 프로그램을 켜 두세요.</p>
+              <Button type="button" variant="ghost" onClick={() => setHelpOpen(false)}>닫기</Button>
+            </PopoverContent>
+          </Popover></div>
         {creating && <form className="automation-form" onSubmit={event => { event.preventDefault(); void action(async () => {
           await api('/automations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, source, media_id: mediaId,
             targets, weekdays, time, timezone: zone }) });
@@ -133,7 +178,14 @@ export default function AutomationPanel({ media, onBack, onManageConnections, on
                 <label><input type="radio" name="automation-source" aria-label="보관함 영상 반복" checked={source === 'media'} onChange={() => setSource('media')} /><span className="automation-option-icon"><Library size={20} aria-hidden="true" /></span><span><strong>보관함 영상 반복</strong><small>선택한 영상을 매번 방송해요.</small></span><Check className="automation-option-check" size={17} aria-hidden="true" /></label>
                 <label><input type="radio" name="automation-source" aria-label="내 YouTube 최신 영상" checked={source === 'youtube_latest'} onChange={() => setSource('youtube_latest')} /><span className="automation-option-icon"><Video size={20} aria-hidden="true" /></span><span><strong>내 YouTube 최신 영상</strong><small>새로 올라온 공개 영상만 방송해요.</small></span><Check className="automation-option-check" size={17} aria-hidden="true" /></label>
               </fieldset>
-              {source === 'media' ? <div><label className="automation-media-select">보관함 영상<select aria-label="보관함 영상" required disabled={busy} value={mediaId} onChange={event => setMediaId(event.target.value)}><option value="">방송할 영상을 선택하세요</option>{ready.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>{!ready.length && <div className="automation-setup"><span>아직 준비된 영상이 없어요.</span><Button className="automation-button" variant="outline" type="button" onClick={onPrepareMedia}><Plus size={16} />영상 추가하기</Button></div>}</div>
+              {source === 'media' ? <fieldset className="automation-media-library" disabled={busy}><legend>보관함 영상<span>한 개만 선택</span></legend>
+                {ready.length ? <div className="automation-media-list">{ready.map(item => <label key={item.id} className="automation-media-option">
+                  <input type="radio" name="automation-media" aria-label={item.name} value={item.id} checked={mediaId === item.id} onChange={() => setMediaId(item.id)} />
+                  <span className="automation-media-icon"><Video size={21} aria-hidden="true" /></span>
+                  <span className="automation-media-copy"><strong>{item.name}</strong><small>{mediaDetails(item)}</small></span>
+                  <span className="automation-media-indicator" aria-hidden="true">{mediaId === item.id && <Check size={13} strokeWidth={3} />}</span>
+                </label>)}</div> : <div className="automation-setup"><span>아직 준비된 영상이 없어요.</span><Button className="automation-button" variant="outline" type="button" onClick={onPrepareMedia}><Plus size={16} />영상 추가하기</Button></div>}
+              </fieldset>
                 : <div className="automation-channel"><div><strong>{data.youtube?.channel?.title || '내 YouTube 채널'}</strong><p>새 공개 영상이 있을 때만 송출해요.</p></div>
                   {data.youtube?.connected ? <div className="automation-channel-actions"><span className="automation-status"><Check size={14} aria-hidden="true" />연결됨</span><Button className="automation-button automation-secondary" variant="ghost" type="button" disabled={busy} onClick={() => void action(() => api('/youtube-channel', { method: 'DELETE' }))}>연결 해제</Button></div>
                     : data.youtube?.configured ? <Button className="automation-button" type="button" variant="outline" disabled={busy} onClick={connect}><Video size={17} />YouTube 채널 연결</Button>
@@ -144,7 +196,7 @@ export default function AutomationPanel({ media, onBack, onManageConnections, on
               <fieldset className="automation-days" disabled={busy}><legend>반복 요일<span>{repeatLabel(weekdays) || '요일을 선택하세요'}</span></legend><div>{days.map((day, index) => <label key={day}><input type="checkbox" aria-label={`${day}요일`} checked={weekdays.includes(index)} onChange={() => setWeekdays(toggle(weekdays, index))} /><span>{day}</span></label>)}</div></fieldset>
               <div className="automation-time"><label>송출 시간<input type="time" required disabled={busy} value={time} onChange={event => setTime(event.target.value)} /></label><label>시간대<select aria-label="시간대" required disabled={busy} value={zone} onChange={event => setZone(event.target.value)}>{!zones[zone] && <option value={zone}>{zone}</option>}{Object.entries(zones).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></div>
             </section>
-            <section className="automation-form-section" aria-labelledby="automation-target-title"><h2 id="automation-target-title"><Radio size={19} aria-hidden="true" />송출 플랫폼</h2>
+            <section className="automation-form-section" aria-labelledby="automation-target-title"><div className="automation-target-heading"><h2 id="automation-target-title"><Radio size={19} aria-hidden="true" />송출 플랫폼</h2><Button className="automation-button" variant="outline" type="button" disabled={busy} onClick={() => setAddingPlatform(true)}><Plus size={16} aria-hidden="true" />플랫폼 추가</Button></div>
               <fieldset className="automation-targets channel-picker" disabled={busy} aria-describedby="automation-platform-hint">
                 <legend className="sr-only">저장한 송출 플랫폼</legend>
                 {data.connections?.length ? <>
@@ -161,7 +213,7 @@ export default function AutomationPanel({ media, onBack, onManageConnections, on
                       <span className="channel-option-indicator" aria-hidden="true">{selected ? <Check size={13} strokeWidth={3} /> : <Plus size={14} />}</span>
                     </label>;
                   })}</div>
-                </> : <div className="automation-setup"><p id="automation-platform-hint">방송할 채널을 먼저 연결해 주세요.<br />한 번 연결하면 다음 예약에도 사용할 수 있어요.</p><Button className="automation-button" variant="outline" type="button" onClick={onManageConnections}><Plus size={16} />내 계정에서 연결하기</Button></div>}
+                </> : <div className="automation-setup"><p id="automation-platform-hint">방송할 채널을 먼저 연결해 주세요.<br />한 번 연결하면 다음 예약에도 사용할 수 있어요.</p></div>}
               </fieldset>
             </section>
           </div>
@@ -179,5 +231,17 @@ export default function AutomationPanel({ media, onBack, onManageConnections, on
         </article>)}</div>
       </>}
     </div></div>
+    <dialog ref={platformDialog} className="automation-platform-dialog channel-picker" aria-label="송출 플랫폼 추가"
+      onCancel={event => { event.preventDefault(); if (!platformSaving.current) setAddingPlatform(false); }}>
+      {addingPlatform && <ConnectionEditor identity={identity} targets={platformChoices} connections={data?.connections || []}
+        location="account" disabled={savingPlatform}
+        onLoad={async target => {
+          assertSessionIdentity(identity);
+          const value = await api<StreamConnectionValue>(`/stream-connections/${target}/use`, { method: 'POST', cache: 'no-store', signal: AbortSignal.timeout(12000) });
+          assertSessionIdentity(identity); return value;
+        }}
+        onSave={savePlatform} onCancel={() => { if (!platformSaving.current) setAddingPlatform(false); }}
+        onSaved={target => { setAddingPlatform(false); setNotice(`${platforms[target] || target} 연결을 저장하고 선택했어요.`); }} />}
+    </dialog>
   </section>;
 }

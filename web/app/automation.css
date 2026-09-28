@@ -18,18 +18,14 @@
 .automation-count { display: flex; flex-wrap: wrap; align-items: center; min-height: 40px; gap: 10px; color: var(--automation-muted); font-size: 14px; }
 .automation-count strong { color: var(--studio-ink); font-size: 16px; font-weight: 650; }
 .automation-count>span { padding: 3px 9px; background: var(--studio-soft); border-radius: 6px; font-size: 13px; }
-.automation-help { max-width: 400px; color: var(--automation-muted); font-size: 14px; }
+
 .automation-page summary { cursor: pointer; list-style: none; }
 .automation-page summary::-webkit-details-marker { display: none; }
-.automation-help summary { display: flex; align-items: center; justify-content: flex-end; gap: 7px; min-height: 40px; }
-.automation-help[open] summary>svg:last-child, .automation-history[open] summary>svg { transform: rotate(180deg); }
-.automation-help>div { margin-top: 8px; padding: 16px; border-radius: 10px; background: var(--studio-soft); }
-.automation-help p { line-height: 1.75; margin: 0; }
-.automation-help p+p { margin-top: 10px; }
+.automation-history[open] summary>svg { transform: rotate(180deg); }
 .automation-loading { padding: 32px 0; font-size: 15px; color: var(--automation-muted); }
 .automation-notice { display: flex; align-items: center; gap: 9px; padding: 14px 16px; margin-bottom: 20px; border-radius: 9px; background: #edf8f3; color: #23634d; font-size: 14px; line-height: 1.6; }
 .automation-form { margin-top: 22px; }
-.automation-form .automation-name, .automation-media-select, .automation-time>label { display: grid; gap: 9px; margin: 0; font-size: 14px; font-weight: 600; line-height: 1.5; }
+.automation-form .automation-name, .automation-time>label { display: grid; gap: 9px; margin: 0; font-size: 14px; font-weight: 600; line-height: 1.5; }
 .automation-name { max-width: 560px; }
 .automation-form input:not([type=checkbox]):not([type=radio]), .automation-form select { width: 100%; min-width: 0; height: 46px!important; padding: 10px 12px; border: 1px solid #cad3df; border-radius: 9px; background: #fff; color: var(--studio-ink); font-family: inherit; font-size: 16px!important; font-weight: 400; }
 .automation-form input::placeholder { color: #758195; }
@@ -117,7 +113,6 @@
   .automation-page-heading p { font-size: 14px; }
   .automation-content { padding: 20px; }
   .automation-toolbar { gap: 8px; }
-  .automation-help { margin-left: auto; }
   .automation-count { gap: 7px; }
   .automation-count strong { font-size: 15px; }
   .automation-count>span { font-size: 12px; padding: 3px 6px; }
@@ -141,3 +136,38 @@
 @media (prefers-reduced-motion: reduce) {
   .automation-page button { transition: none; }
 }
+
+.automation-target-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+.automation-target-heading h2 { margin: 0; }
+.automation-platform-dialog { width: min(740px, calc(100% - 32px)); max-width: none; max-height: calc(100dvh - 32px); overflow-y: auto; margin: auto; padding: 28px; border: 1px solid var(--studio-line); border-radius: 16px; background: #fff; color: var(--studio-ink); box-shadow: 0 24px 80px #18243d30; }
+.automation-platform-dialog::backdrop { background: #18243d66; }
+.automation-platform-dialog .member-connection-editor { border-top: 0; padding-top: 0; }
+.automation-platform-dialog .member-editor-heading p, .automation-platform-dialog .member-editor-footer>p { font-size: 14px; }
+.automation-platform-dialog .member-editor-footer>button { min-height: 44px; }
+.automation-platform-dialog .channel-field input { min-height: 44px; font-size: 16px; }
+.automation-platform-dialog .member-platform-grid strong { font-size: 15px; }
+@media (max-width: 480px) {
+  .automation-platform-dialog { padding: 20px; }
+}
+
+.automation-help-trigger { display: inline-flex; align-items: center; gap: 7px; margin-left: auto; min-height: 44px; padding: 0 8px; color: var(--automation-muted); font-size: 14px; cursor: pointer; border-radius: 8px; }
+.automation-help-trigger:hover { background: #f2f5ff; color: #3458d4; }
+.automation-help-popup { width: min(360px, calc(100vw - 32px)); padding: 20px; gap: 14px; color: #56657b; background: #fff; border: 1px solid #dfe6f0; font-size: 14px; line-height: 1.75; border-radius: 12px; }
+.automation-help-popup [data-slot=popover-title] { color: #18243d; font-size: 16px; font-weight: 650; }
+.automation-help-popup button { align-self: flex-end; min-height: 44px; color: #3458d4; }
+.automation-media-library { min-width: 0; }
+.automation-media-library legend { display: flex; justify-content: space-between; gap: 12px; width: 100%; margin-bottom: 12px; font-size: 14px; font-weight: 600; }
+.automation-media-library legend>span { color: var(--automation-muted); font-size: 13px; font-weight: 400; }
+.automation-media-list { display: grid; gap: 10px; max-height: 340px; overflow-y: auto; padding: 4px; margin: -4px; }
+.automation-media-option { position: relative; display: flex; align-items: center; gap: 12px; min-width: 0; padding: 16px; border: 1px solid #d5ddea; border-radius: 10px; cursor: pointer; }
+.automation-media-option:hover { border-color: #9daddb; }
+.automation-media-option:has(input:checked) { border-color: #3458d4; background: #f2f5ff; }
+.automation-media-option input { position: absolute; inset: 0; width: 100%; height: 100%!important; opacity: 0; cursor: pointer; }
+.automation-media-option:has(input:focus-visible) { outline: 3px solid #3458d4; outline-offset: 2px; }
+.automation-media-icon { display: grid; place-items: center; width: 42px; height: 48px; flex-shrink: 0; background: #edf1f7; border-radius: 8px; color: #56657b; }
+.automation-media-copy { flex: 1; min-width: 0; }
+.automation-media-copy strong { display: block; font-size: 15px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.automation-media-copy small { display: block; margin-top: 5px; font-size: 13px; line-height: 1.5; color: var(--automation-muted); }
+.automation-media-indicator { display: grid; place-items: center; flex-shrink: 0; width: 20px; height: 20px; border: 1px solid #aab6c9; border-radius: 50%; }
+.automation-media-option:has(input:checked) .automation-media-indicator { color: #fff; background: #3458d4; border-color: #3458d4; }
+.automation-media-library:disabled label { opacity: .5; cursor: not-allowed; }
