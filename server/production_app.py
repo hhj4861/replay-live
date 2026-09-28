@@ -423,7 +423,10 @@ def create_production_app(settings=None, *, repository=None, storage=None, keys=
         if not re.fullmatch(r'[a-zA-Z0-9._:-]{8,200}', idem):
             raise HTTPException(400, '중복 등록 방지 키가 필요합니다.')
         source = normalize_source(payload.provider, payload.url)
-        name = payload.name.strip() if payload.name is not None else '가져온 녹화영상.mp4'
+        name = (payload.name or '').strip()
+        if source['provider'] == 'youtube' and not name:
+            source['use_original_title'] = True
+        name = name or '가져온 녹화영상.mp4'
         encoded = json.dumps(source, sort_keys=True, separators=(',', ':'))
         fingerprint = hmac.new(cfg.callback_key.encode(), json.dumps(
             {'operation': 'import', 'source': source, 'name': name}, sort_keys=True,
@@ -622,6 +625,8 @@ def create_production_app(settings=None, *, repository=None, storage=None, keys=
                     if not isinstance(decoded, dict):
                         raise ValueError('Invalid stored media source')
                     import_source = normalize_source(decoded.get('provider'), decoded.get('url'))
+                    if import_source['provider'] == 'youtube' and decoded.get('use_original_title') is True:
+                        import_source['use_original_title'] = True
                 elif row['target'] == 'youtube' and not isinstance(decoded, dict) and not plaintext.startswith('{'):
                     decoded = {'target': 'youtube', 'server_url': '', 'stream_key': plaintext}
                 if row['target'] != 'import':

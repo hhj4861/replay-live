@@ -5,6 +5,8 @@ No external platform is contacted or streamed to by this test.
 """
 import hashlib
 
+import pytest
+
 from test_commercial_api import commercial, run_claimed
 from test_poc import clip
 import server.worker as worker
@@ -51,3 +53,45 @@ def test_imported_recording_can_be_reused_for_existing_broadcast(commercial, cli
     output = client.get(result['url']).content
     assert output.startswith(b'FLV') and len(output) > 0
     assert repo.get_media('alpha', item['id'])['status'] == 'ready'
+
+
+@pytest.mark.parametrize(('supplied_name', 'source_title', 'expected'), [
+    (None, '내 YouTube 영상 🎬', '내 YouTube 영상 🎬'),
+    ('  ', '자동 제목', '자동 제목'),
+    ('내가 정한 이름', '원본 제목', '내가 정한 이름'),
+    ('가져온 녹화영상.mp4', '원본 제목', '가져온 녹화영상.mp4'),
+    (None, None, '가져온 녹화영상.mp4'),
+])
+def test_youtube_title_reaches_library_without_overwriting_custom_name(
+        commercial, clip, monkeypatch, supplied_name, source_title, expected):
+    client, repo, _ = commercial
+    content = clip.read_bytes()
+
+    def source_download(source, output, **limits):
+        assert source['provider'] == 'youtube'
+        assert source.get('use_original_title', False) == (not (supplied_name or '').strip())
+        limits['check_active']()
+        output.write_bytes(content)
+        result = {'bytes': len(content), 'sha256': hashlib.sha256(content).hexdigest(),
+                  'name': 'youtube-recording.mp4'}
+        if source_title:
+            result['source_title'] = source_title
+        return result
+
+    monkeypatch.setattr(worker, 'download_source', source_download)
+    request = {'provider': 'youtube', 'url': 'https://youtu.be/GcOe4ILS6Ow'}
+    if supplied_name is not None:
+        request['name'] = supplied_name
+    response = client.post('/api/media/imports', json=request,
+                           headers={'Idempotency-Key': 'youtube-title-flow'})
+    assert response.status_code == 202, response.text
+    media_id = response.json()['media']['id']
+    run_claimed(client)
+    saved = client.get('/api/media').json()[0]
+    assert saved['status'] == 'ready' and saved['name'] == expected
+    assert repo.get_media('alpha', media_id)['name'] == expected
+    preview = client.get('/api/media/' + media_id + '/preview').json()
+    assert client.get(preview['url']).content == content
+    repeated = client.post('/api/media/imports', json=request,
+                           headers={'Idempotency-Key': 'youtube-title-flow'})
+    assert repeated.status_code == 202 and repeated.json()['media']['name'] == expected

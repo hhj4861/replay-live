@@ -192,8 +192,9 @@ def run_job(job, *, client=None, workdir=None):
                 if job['max_duration'] and metadata['duration'] > job['max_duration']:
                     raise MediaError('MEDIA_TOO_LONG', '허용된 영상 길이를 초과했습니다.')
                 lease.require_active()
-                if imported:
-                    metadata['name'] = imported['name']
+                if (imported and job.get('source', {}).get('use_original_title') is True
+                        and imported.get('source_title')):
+                    metadata['source_title'] = imported['source_title']
                 result = {'state': 'completed', 'metadata': metadata, 'progress': 0}
             else:
                 target = destination_url(destination) if destination else str(output)

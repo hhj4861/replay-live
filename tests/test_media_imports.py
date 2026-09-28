@@ -214,12 +214,12 @@ def test_api_import_uses_encrypted_handoff_and_checks_uploaded_original(import_a
     with repo.engine.connect() as conn:
         ciphertext = conn.execute(select(jobs.c.secret_ciphertext)).scalar_one()
         assert source['url'] not in ciphertext
-        assert json.loads(keys.decrypt(ciphertext, context={'tenant_id': 'alpha'})) == source
+        assert json.loads(keys.decrypt(ciphertext, context={'tenant_id': 'alpha'})) == {**source, 'use_original_title': True}
     response = client.post('/internal/claim', json={'worker_id': 'worker', 'version': 'import-test'},
         headers={'Authorization': 'Bearer ' + 'c' * 32})
     assert response.status_code == 200, response.text
     claim = response.json()['job']
-    assert claim['source'] == source and claim['input'] is None
+    assert claim['source'] == {**source, 'use_original_title': True} and claim['input'] is None
     assert claim['stream_destination'] is None and claim['stream_key'] == ''
     worker = {'Authorization': 'Bearer ' + claim['callback_token']}
     # These callbacks test object publication independently of downloader/decoder tests.

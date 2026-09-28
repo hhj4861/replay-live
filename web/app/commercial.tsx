@@ -601,7 +601,7 @@ export default function CommercialHome() {
           {health && <p id="source-link-limits" className="source-link-limits">{[health.max_duration_seconds > 0 ? `최대 ${clock(health.max_duration_seconds)}` : '', health.max_upload_mb > 0 ? `${health.max_upload_mb} MB` : '보관함의 남은 공간까지'].filter(Boolean).join(' · ')}</p>}
           <details className="studio-optional-field"><summary><span>{sourceName.trim() ? `보관함 이름: ${sourceName.trim()}` : '보관함 이름 지정'}</span><ChevronDown size={14} aria-hidden="true" /></summary>
             <label className="sr-only" htmlFor="source-name">보관함 이름</label>
-            <Input id="source-name" maxLength={180} placeholder="비워두면 자동으로 이름을 정해요" value={sourceName} disabled={!!busy || importPending}
+            <Input id="source-name" maxLength={180} placeholder={sourceProvider === 'youtube' ? '비워두면 YouTube 영상 제목을 사용해요' : '비워두면 기본 이름을 사용해요'} value={sourceName} disabled={!!busy || importPending}
               onChange={event => setSourceName(event.target.value)} />
           </details>
           <Button type="submit" className="source-import-button" disabled={!canOperate || !!busy || !connected || !health || !sourcePlatform || !sourceUrl.trim() || importPending}>

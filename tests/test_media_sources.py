@@ -644,3 +644,23 @@ def test_existing_output_is_preserved(tmp_path):
         sources.download_source({'provider': 'direct', 'url': 'https://media.example.com/video.mp4'}, output,
             max_bytes=1024, max_duration=5, timeout=30, check_active=lambda: None)
     assert output.read_bytes() == b'existing'
+
+
+@pytest.mark.parametrize(('title', 'expected'), [
+    ('나의 여행 🎬 | 제주', '나의 여행 🎬 | 제주'),
+    ('  첫 영상\n 두 번째\x00 제목\u202e  ', '첫 영상 두 번째 제목'),
+    ('가' * 220, '가' * 180),
+    ('   \n', None),
+    (None, None),
+    (123, None),
+])
+def test_youtube_original_title_is_safe_display_metadata(monkeypatch, tmp_path, sample_mp4, title, expected):
+    network(monkeypatch, [Response(sample_mp4)])
+    monkeypatch.setattr(sources, '_extract', lambda *args: {'title': title, 'duration': 1,
+        'formats': [{'url': 'https://media.example.com/video.mp4', 'protocol': 'https',
+                     'ext': 'mp4', 'vcodec': 'avc1', 'acodec': 'mp4a'}]})
+    output = tmp_path / 'output.mp4'
+    result = sources.download_source({'provider': 'youtube', 'url': 'https://youtu.be/BaW_jenozKc'},
+        output, max_bytes=1024 * 1024, max_duration=5, timeout=30, check_active=lambda: None)
+    assert result.get('source_title') == expected
+    assert list(tmp_path.iterdir()) == [output]

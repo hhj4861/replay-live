@@ -27,6 +27,7 @@ import tempfile
 import threading
 import time
 import uuid
+import unicodedata
 from urllib.parse import parse_qs, unquote, urljoin, urlsplit, urlunsplit
 
 import certifi
@@ -928,6 +929,7 @@ def download_source(source, output: Path, *, max_bytes: int, max_duration: float
     transport = _Transport(budget, proxy_url if use_proxy else None)
     complete = False
     started = time.monotonic()
+    source_title = None
     stage = 'metadata'
     stage_started = started
 
@@ -944,6 +946,11 @@ def download_source(source, output: Path, *, max_bytes: int, max_duration: float
             else:
                 info = _extract(normalized, transport)
                 _recording(info, max_duration)
+                if normalized['provider'] == 'youtube' and isinstance(info.get('title'), str):
+                    # Display text only: never use a platform title as a filesystem path.
+                    title = ''.join(' ' if unicodedata.category(c) in {'Cc', 'Cf'} else c
+                                    for c in info['title'])
+                    source_title = ' '.join(title.split())[:180].strip() or None
                 formats = _select_formats(info, transcode=use_proxy)
                 expected_duration = float(info['duration']) if info.get('duration') is not None else None
             finish_stage()
@@ -967,7 +974,10 @@ def download_source(source, output: Path, *, max_bytes: int, max_duration: float
                 digest.update(chunk)
         finish_stage()
         complete = True
-        return {'bytes': output.stat().st_size, 'sha256': digest.hexdigest(), 'name': f'{normalized["provider"]}-recording.mp4'}
+        result = {'bytes': output.stat().st_size, 'sha256': digest.hexdigest(), 'name': f'{normalized["provider"]}-recording.mp4'}
+        if source_title:
+            result['source_title'] = source_title
+        return result
     except SourceImportError as error:
         logging.getLogger(__name__).info(json.dumps({'event': 'source_import_failed', 'stage': stage,
             'code': error.code, 'elapsed_ms': round((time.monotonic() - started) * 1000), 'retries': budget.retries}))
