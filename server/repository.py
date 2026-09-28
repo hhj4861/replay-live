@@ -812,6 +812,8 @@ class Repository:
                 values = {key: info[key] for key in ('duration', 'width', 'height', 'fps')}
                 if row['target'] == 'import':
                     values.update(object_key=info['object_key'], bytes=info['bytes'], sha256=info['sha256'])
+                    if info.get('source_title') is not None:
+                        values['name'] = _identity(info['source_title'], 'media name', 180)
                 values.update(status='ready', error_code=None, updated=now)
             else:
                 values = dict(status='failed', error_code=error_code or
