@@ -38,15 +38,18 @@ try {
   await page.getByRole('heading', { name: '새 방송 만들기', exact: true }).waitFor();
   await page.locator('.connection').filter({ hasText: '스튜디오 연결됨' }).waitFor();
   assert.ok(authorization);
-  // Save through the actual UI, including local automation's account storage selection.
-  await page.locator('#platform-youtube').click();
-  await page.locator('#key-youtube').fill('synthetic-browser-test-key');
-  await page.getByRole('button', { name: /YouTube.*연결 저장/ }).click();
-  await page.getByText('내 계정에 저장됨', { exact: true }).waitFor();
-  assert.equal((await request('/stream-connections'))[0].target, 'youtube');
-  report.checks.push('platform saved from UI to account storage');
+  // Fixture setup only; this suite exercises automation, not manual channel setup.
+  await request('/stream-connections/youtube', { method: 'PUT', data: { server_url: '', stream_key: 'synthetic-browser-test-key' } });
+  const menu = page.getByRole('navigation', { name: '스튜디오 메뉴' });
+  const automationLink = menu.getByRole('link', { name: '자동 송출', exact: true });
+  await automationLink.click();
+  assert.equal(await automationLink.getAttribute('aria-current'), 'page');
   const panel = page.getByRole('region', { name: '자동 송출', exact: true });
-  await panel.locator('.automation-heading').click();
+  await panel.getByRole('heading', { name: '자동 송출', level: 1, exact: true }).waitFor();
+  assert.equal(await page.locator('#broadcast-form').count(), 0);
+  assert.equal(await page.locator('.studio-launch-dock').count(), 0);
+  assert.equal(await page.getByRole('heading', { name: '방송 이력', exact: true }).count(), 0);
+  report.checks.push('automation opens from top-level menu without manual broadcast controls');
   await panel.getByRole('button', { name: '일정 만들기', exact: true }).click();
   await panel.getByLabel('일정 이름', { exact: true }).fill('매주 신제품 E2E');
   await panel.getByLabel('내 YouTube 최신 영상', { exact: true }).check();
@@ -60,7 +63,11 @@ try {
   await panel.getByLabel('보관함 영상', { exact: true }).selectOption(ready.id);
   await panel.getByRole('checkbox', { name: 'YouTube', exact: true }).check();
   await panel.getByLabel('송출 시간', { exact: true }).fill('18:00');
-  await panel.locator('input[list=automation-zones]').fill('Asia/Seoul');
+  await panel.getByLabel('시간대', { exact: true }).fill('Invalid/TestZone');
+  await panel.getByRole('button', { name: '자동 송출 시작', exact: true }).click();
+  await panel.getByRole('alert').filter({ hasText: '올바른 시간대를 선택해 주세요.' }).waitFor();
+  report.checks.push('invalid schedule shows actionable API error');
+  await panel.getByLabel('시간대', { exact: true }).fill('Asia/Seoul');
   await panel.getByRole('button', { name: '자동 송출 시작', exact: true }).click();
   await panel.getByRole('heading', { name: '매주 신제품 E2E', exact: true }).waitFor();
   const stored = await request('/automations');
@@ -71,13 +78,14 @@ try {
   ruleId = rule.id;
   report.checks.push('form saves source, recurrence and destination in API database');
   await page.reload();
-  await panel.locator('.automation-heading').click();
+  await panel.getByRole('heading', { name: '자동 송출', level: 1, exact: true }).waitFor();
+  assert.equal(await page.locator('#broadcast-form').count(), 0);
   await panel.getByRole('heading', { name: '매주 신제품 E2E', exact: true }).waitFor();
   await panel.getByRole('button', { name: '매주 신제품 E2E 일시중지', exact: true }).click();
   await panel.getByRole('button', { name: '매주 신제품 E2E 다시 시작', exact: true }).waitFor();
   assert.equal((await request('/automations')).items.find(item => item.id === ruleId).enabled, false);
   report.checks.push('reload persistence and pause');
-  if (process.env.REPLAY_E2E_SCREENSHOT) await panel.screenshot({ path: process.env.REPLAY_E2E_SCREENSHOT });
+  if (process.env.REPLAY_E2E_SCREENSHOT) await page.screenshot({ path: process.env.REPLAY_E2E_SCREENSHOT, fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   await panel.scrollIntoViewIfNeeded();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
@@ -89,11 +97,51 @@ try {
   assert.equal((await request('/automations')).items.some(item => item.id === ruleId), false);
   ruleId = undefined;
   report.checks.push('resume and delete persisted');
+  // A fresh visit uses the bookmarkable automation route; other views remain reachable.
+  await page.getByRole('link', { name: 'Replay Live', exact: true }).click();
+  await page.getByRole('heading', { name: '새 방송 만들기', exact: true }).waitFor();
+  assert.equal(await panel.count(), 0);
+  await automationLink.click();
+  await panel.getByRole('heading', { name: '자동 송출', level: 1, exact: true }).waitFor();
+  await panel.getByRole('button', { name: '일정 만들기', exact: true }).click();
+  await panel.getByLabel('일정 이름', { exact: true }).fill('예약 실행 E2E');
+  await panel.getByLabel('보관함 영상', { exact: true }).selectOption(ready.id);
+  await panel.getByRole('checkbox', { name: 'YouTube', exact: true }).check();
+  const due = new Date(Date.now() + 120000);
+  await panel.getByLabel('송출 시간', { exact: true }).fill(due.toISOString().slice(11, 16));
+  await panel.getByLabel('시간대', { exact: true }).fill('UTC');
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  report.checks.push('mobile creation form has no horizontal overflow');
+  await panel.getByRole('button', { name: '자동 송출 시작', exact: true }).click();
+  await panel.getByRole('heading', { name: '예약 실행 E2E', exact: true }).waitFor();
+  ruleId = (await request('/automations')).items.find(item => item.name === '예약 실행 E2E').id;
+  // Wait for real wall-clock scheduling, API tick, job queue and local worker rejection.
+  // The preview deliberately rejects external streaming; never send a synthetic key to a platform.
+  const deadline = Date.now() + 180000;
+  let executed;
+  while (Date.now() < deadline) {
+    executed = (await request('/automations')).items.find(item => item.id === ruleId);
+    if (executed.history[0]?.state === 'failed') break;
+    await new Promise(resolve => setTimeout(resolve, 3000));
+  }
+  assert.equal(executed.history.length, 1);
+  assert.equal(executed.history[0].state, 'failed');
+  assert.equal(executed.history[0].error_code, 'BROADCAST_FAILED');
+  const broadcasts = (await request('/broadcasts')).filter(item => item.media_id === ready.id && item.target === 'youtube');
+  assert.equal(broadcasts.length, 1, 'scheduler must enqueue exactly one broadcast');
+  assert.equal(broadcasts[0].error_code, 'PREVIEW_EXTERNAL_OUTPUT_FORBIDDEN');
+  await panel.getByText('최근 결과: 실행 실패', { exact: true }).waitFor({ timeout: 25000 });
+  await panel.getByText('최근 결과: 실행 실패', { exact: true }).click();
+  await panel.getByText('방송 이력에서 실패한 플랫폼을 확인해 주세요.', { exact: true }).waitFor();
+  report.checks.push('scheduled tick enqueues one job and surfaces local external-output rejection');
+  await panel.getByRole('button', { name: '예약 실행 E2E 삭제', exact: true }).click();
+  await panel.getByRole('heading', { name: '예약 실행 E2E', exact: true }).waitFor({ state: 'detached' });
+  ruleId = undefined;
   assert.deepEqual(errors, []);
   report.passed = true;
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {
-  console.error(await page.locator('.automation-panel').innerText().catch(() => 'No automation panel'));
+  console.error(await page.locator('.automation-page').innerText().catch(() => 'No automation panel'));
   throw error;
 } finally {
   if (ruleId) await request('/automations/' + ruleId, { method: 'DELETE' }).catch(() => {});

@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CalendarClock, ChevronDown, Plus } from 'lucide-react';
+import { ArrowLeft, Plus } from 'lucide-react';
 import { api, API_BASE } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import './automation.css';
@@ -24,9 +24,10 @@ const failures: Record<string, string> = {
   BROADCAST_FAILED: '방송 이력에서 실패한 플랫폼을 확인해 주세요.', IMPORT_FAILED: '원본 영상을 가져오지 못했습니다.',
 };
 
-export default function AutomationPanel({ media }: { media: Media[] }) {
+export default function AutomationPanel({ media, onBack, onManageConnections, onPrepareMedia }: {
+  media: Media[]; onBack: () => void; onManageConnections: () => void; onPrepareMedia: () => void;
+}) {
   const [data, setData] = useState<Data | null>(null);
-  const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -39,6 +40,7 @@ export default function AutomationPanel({ media }: { media: Media[] }) {
   const [time, setTime] = useState('18:00');
   const [zone, setZone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Seoul');
   const alive = useRef(true);
+  const heading = useRef<HTMLHeadingElement>(null);
   const popup = useRef<Window | null>(null);
   const refreshVersion = useRef(0);
   const refresh = useCallback(async () => {
@@ -48,14 +50,14 @@ export default function AutomationPanel({ media }: { media: Media[] }) {
   }, []);
   useEffect(() => {
     alive.current = true;
+    heading.current?.focus();
     void refresh().catch(() => { if (alive.current) setError('자동 송출 일정을 불러오지 못했습니다. 다시 열어 주세요.'); });
     return () => { alive.current = false; popup.current?.close(); };
   }, [refresh]);
   useEffect(() => {
-    if (!open) return;
     const timer = setInterval(() => { void refresh().catch(() => {}); }, 15000);
     return () => clearInterval(timer);
-  }, [open, refresh]);
+  }, [refresh]);
   useEffect(() => {
     function connected(event: MessageEvent) {
       if (event.source !== popup.current || event.origin !== new URL(API_BASE, location.href).origin
@@ -83,20 +85,17 @@ export default function AutomationPanel({ media }: { media: Media[] }) {
       } catch (e) { popup.current?.close(); throw e; }
     });
   }
-  if (data && !data.enabled) return null;
   const ready = media.filter(item => item.status === 'ready');
   const toggle = <T,>(values: T[], value: T) => values.includes(value) ? values.filter(item => item !== value) : [...values, value];
-  return <section className="automation-panel" aria-label="자동 송출">
-    <button type="button" className="automation-heading" aria-expanded={open} aria-controls="automation-content"
-      onClick={() => { setOpen(!open); if (!open) void refresh().catch(() => setError('일정을 불러오지 못했습니다. 다시 열어 주세요.')); }}>
-      <CalendarClock size={22} /><span><strong>자동 송출</strong><small>영상과 일정을 한 번 정하면, 정해진 시간에 방송해요.</small></span>
-      <span className="automation-count">{data?.items.filter(item => item.enabled).length || 0}개 사용 중</span><ChevronDown size={18} />
-    </button>
-    {open && <div id="automation-content" className="automation-content">
+  return <section className="automation-page" aria-labelledby="automation-title">
+    <div className="automation-page-heading"><div><h1 id="automation-title" ref={heading} tabIndex={-1}>자동 송출</h1>
+      <p>영상과 일정을 한 번 정하면, 정해진 시간에 방송해요.</p></div>
+      <Button variant="outline" onClick={onBack}><ArrowLeft size={16} />스튜디오로 돌아가기</Button></div>
+    <div className="automation-panel"><div id="automation-content" className="automation-content">
       {error && <p role="alert" className="automation-error">{error}</p>}
       {notice && <output>{notice}</output>}
-      {!data ? <p>일정을 불러오는 중…</p> : <>
-        <div className="automation-toolbar"><details><summary aria-label="자동 송출 도움말">? 도움말</summary><p>화면을 닫아도 실행됩니다. 로컬 확인 중에는 API와 작업 실행기를 켜 두세요. 일시중지는 다음 회차부터 적용됩니다. 플랫폼에 따라 라이브 공개 설정을 별도로 완료해야 합니다.</p></details>
+      {!data ? <p>일정을 불러오는 중…</p> : !data.enabled ? <p>자동 송출을 사용할 수 없는 환경입니다.</p> : <>
+        <div className="automation-toolbar"><span className="automation-count">{data.items.filter(item => item.enabled).length}개 사용 중</span><details><summary aria-label="자동 송출 도움말">? 도움말</summary><p>화면을 닫아도 실행됩니다. 로컬 확인 중에는 API와 작업 실행기를 켜 두세요. 일시중지는 다음 회차부터 적용됩니다. 플랫폼에 따라 라이브 공개 설정을 별도로 완료해야 합니다.</p></details>
           {!creating && <Button variant="outline" onClick={() => setCreating(true)}><Plus size={15} />일정 만들기</Button>}</div>
         {creating && <form className="automation-form" onSubmit={event => { event.preventDefault(); void action(async () => {
           await api('/automations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, source, media_id: mediaId,
@@ -108,7 +107,7 @@ export default function AutomationPanel({ media }: { media: Media[] }) {
             <label><input type="radio" name="automation-source" checked={source === 'media'} onChange={() => setSource('media')} />보관함 영상 반복</label>
             <label><input type="radio" name="automation-source" checked={source === 'youtube_latest'} onChange={() => setSource('youtube_latest')} />내 YouTube 최신 영상</label>
           </fieldset>
-          {source === 'media' ? <label>보관함 영상<select aria-label="보관함 영상" required value={mediaId} onChange={event => setMediaId(event.target.value)}><option value="">영상 선택</option>{ready.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select>{!ready.length && <small>먼저 보관함에 영상을 추가해 주세요.</small>}</label>
+          {source === 'media' ? <label>보관함 영상<select aria-label="보관함 영상" required value={mediaId} onChange={event => setMediaId(event.target.value)}><option value="">영상 선택</option>{ready.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select>{!ready.length && <small>먼저 보관함에 영상을 추가해 주세요. <button type="button" onClick={onPrepareMedia}>영상 추가하기</button></small>}</label>
             : <div className="automation-channel"><strong>{data.youtube?.channel?.title || '내 YouTube 채널'}</strong><p>새 공개 영상이 있을 때만 송출해요.</p>
               {data.youtube?.connected ? <><span>연결됨</span><button type="button" disabled={busy} onClick={() => void action(() => api('/youtube-channel', { method: 'DELETE' }))}>연결 해제</button></>
                 : <Button type="button" variant="outline" disabled={busy || !data.youtube?.configured} onClick={connect}>YouTube 채널 연결</Button>}
@@ -116,7 +115,7 @@ export default function AutomationPanel({ media }: { media: Media[] }) {
             </div>}
           <fieldset className="automation-days"><legend>반복 요일</legend>{days.map((day, index) => <label key={day}><input type="checkbox" checked={weekdays.includes(index)} onChange={() => setWeekdays(toggle(weekdays, index))} /><span>{day}</span></label>)}</fieldset>
           <div className="automation-time"><label>송출 시간<input type="time" required value={time} onChange={event => setTime(event.target.value)} /></label><label>시간대<input aria-label="시간대" required value={zone} onChange={event => setZone(event.target.value)} list="automation-zones" /><datalist id="automation-zones"><option value="Asia/Seoul">Asia/Seoul</option><option value="Asia/Tokyo">Asia/Tokyo</option><option value="America/Los_Angeles">America/Los_Angeles</option><option value="America/New_York">America/New_York</option><option value="Europe/London">Europe/London</option><option value="UTC">UTC</option></datalist></label></div>
-          <fieldset className="automation-targets"><legend>저장한 송출 플랫폼</legend>{data.connections?.length ? data.connections.map(item => <label key={item.target}><input type="checkbox" checked={targets.includes(item.target)} onChange={() => setTargets(toggle(targets, item.target))} />{platforms[item.target] || item.target}</label>) : <p>위의 방송 채널에서 연결 정보를 먼저 저장해 주세요.</p>}</fieldset>
+          <fieldset className="automation-targets"><legend>저장한 송출 플랫폼</legend>{data.connections?.length ? data.connections.map(item => <label key={item.target}><input type="checkbox" checked={targets.includes(item.target)} onChange={() => setTargets(toggle(targets, item.target))} />{platforms[item.target] || item.target}</label>) : <p>송출할 플랫폼 연결을 먼저 저장해 주세요. <button type="button" onClick={onManageConnections}>내 계정에서 연결하기</button></p>}</fieldset>
           <div className="automation-actions"><Button type="button" variant="ghost" disabled={busy} onClick={() => setCreating(false)}>취소</Button><Button type="submit" disabled={busy || !targets.length || !weekdays.length || (source === 'media' ? !mediaId : !data.youtube?.connected)}>{busy ? '저장 중…' : '자동 송출 시작'}</Button></div>
         </form>}
         {!data.items.length && !creating && <p className="automation-empty">매일 또는 원하는 요일에 방송할 일정을 만들어 보세요.</p>}
@@ -129,6 +128,6 @@ export default function AutomationPanel({ media }: { media: Media[] }) {
             <button type="button" disabled={busy || item.active} aria-label={`${item.name} 삭제`} onClick={() => void action(() => api(`/automations/${item.id}`, { method: 'DELETE' }))}>삭제</button></div>
         </article>)}</div>
       </>}
-    </div>}
+    </div></div>
   </section>;
 }
