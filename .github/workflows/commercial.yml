@@ -49,6 +49,7 @@ jobs:
         run: |
           python -c "import os,psycopg; c=psycopg.connect(os.environ['REPLAY_DATABASE_URL'].replace('postgresql+psycopg://','postgresql://'),autocommit=True); c.execute('CREATE DATABASE replay_test'); c.close()"
           python -m pytest -q
+          node --test tests/deploy-credentials.test.mjs
       - name: PostgreSQL migration, tenant isolation and concurrent leases
         run: |
           python scripts/commercial-migrate.py

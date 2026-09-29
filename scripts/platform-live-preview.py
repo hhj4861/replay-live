@@ -52,7 +52,7 @@ VM_MARKER = Path('/etc/replay-platform-test-vm')
 VM_MARKER_CONTENT = 'replay-platform-live-test-v1\n'
 PIN_JOURNAL = Path('/run/replay-platform-live-host-pin.json')
 STORAGE_LIMIT = 1024**3
-MAX_DURATION = 120
+MAX_DURATION = 0
 
 
 class LivePreviewError(ValueError):
@@ -263,9 +263,9 @@ def build_application(data_dir, *, api_port=18092, web_port=13102, allowed=froze
     cfg = Settings(mode='development', database_url='sqlite:///' + str(database),
         public_url=f'http://127.0.0.1:{api_port}', origins=(f'http://127.0.0.1:{web_port}',),
         control_token=values['control_token'], callback_key=values['callback_key'], version=VERSION,
-        local_root=str(data_dir), max_upload_bytes=STORAGE_LIMIT, max_output_bytes=STORAGE_LIMIT,
-        max_storage_bytes=STORAGE_LIMIT, max_duration=MAX_DURATION, validation_timeout=120,
-        tenant_concurrency=1, global_concurrency=1, worker_max_seconds=900)
+        local_root=str(data_dir), max_upload_bytes=0, max_output_bytes=STORAGE_LIMIT,
+        max_storage_bytes=STORAGE_LIMIT, max_duration=MAX_DURATION,
+        tenant_concurrency=1, global_concurrency=1)
     repo = Repository(cfg.database_url, create_schema=True, max_storage_bytes=cfg.max_storage_bytes,
         max_output_bytes=cfg.max_output_bytes, validation_duration=cfg.validation_timeout,
         tenant_concurrency=1, global_concurrency=1, reservation_grace=cfg.reservation_grace)
@@ -288,7 +288,8 @@ def build_application(data_dir, *, api_port=18092, web_port=13102, allowed=froze
 
 def seed_sample(runtime, source):
     source = Path(source)
-    if not source.is_file() or not 1 <= source.stat().st_size <= runtime.cfg.max_upload_bytes:
+    upload_budget = runtime.cfg.max_upload_bytes or runtime.cfg.max_storage_bytes
+    if not source.is_file() or not 1 <= source.stat().st_size <= upload_budget:
         raise LivePreviewError('PLATFORM_TEST_SAMPLE_INVALID')
     with tempfile.TemporaryDirectory(prefix='sample-check-', dir=runtime.data_dir) as temporary:
         snapshot = Path(temporary) / 'sample.mp4'
@@ -296,7 +297,7 @@ def seed_sample(runtime, source):
         with source.open('rb') as handle, snapshot.open('xb') as output:
             while chunk := handle.read(1024 * 1024):
                 size += len(chunk)
-                if size > runtime.cfg.max_upload_bytes:
+                if size > upload_budget:
                     raise LivePreviewError('PLATFORM_TEST_SAMPLE_INVALID')
                 digest.update(chunk)
                 output.write(chunk)
@@ -309,8 +310,9 @@ def seed_sample(runtime, source):
             pass
         if size > runtime.repo.usage(TENANT)['storage_available_bytes']:
             raise LivePreviewError('PLATFORM_TEST_SAMPLE_STORAGE_FULL')
-        metadata = validate_media(snapshot, validation_timeout=120, allow_portrait=True)
-        if metadata['duration'] > MAX_DURATION:
+        metadata = validate_media(snapshot, validation_timeout=runtime.cfg.validation_timeout,
+                                  allow_portrait=True, max_duration=runtime.cfg.max_duration)
+        if runtime.cfg.max_duration and metadata['duration'] > runtime.cfg.max_duration:
             raise LivePreviewError('PLATFORM_TEST_SAMPLE_TOO_LONG')
         object_key = runtime.objects.key(TENANT, media_id)
         runtime.objects.upload(TENANT, object_key, snapshot)

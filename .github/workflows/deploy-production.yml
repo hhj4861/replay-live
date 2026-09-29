@@ -1,7 +1,7 @@
 name: Deploy Replay production
 on:
   push:
-    branches: [main]
+    branches: [deploy/replay]
   workflow_dispatch:
 permissions:
   contents: read
@@ -10,16 +10,19 @@ concurrency:
   cancel-in-progress: false
 jobs:
   commercial:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/deploy/replay' && github.event.created != true
     uses: ./.github/workflows/commercial.yml
   cloudflare:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/deploy/replay' && github.event.created != true
     uses: ./.github/workflows/cloudflare.yml
   deploy:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/deploy/replay' && github.event.created != true
     needs: [commercial, cloudflare]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
     environment:
       name: production
       url: https://replay-live-poc.vercel.app
@@ -33,19 +36,14 @@ jobs:
           node-version: '24'
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - name: Check deployment credential
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-        run: test -n "$VERCEL_TOKEN" || { echo 'VERCEL_TOKEN secret is required'; exit 1; }
       - name: Install pinned deployment tools
         run: |
           npm ci --prefix web --ignore-scripts
           npm install --global vercel@60.1.3
       - name: Build worker, stage API and web, promote and verify
         env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           REPLAY_FFMPEG_PACKAGE_VERSION: '7:8.0.1-3ubuntu2'
-        run: python scripts/deploy-production.py --execute --report release-artifacts/production.json
+        run: node scripts/deploy-credentials.mjs
       - name: Preserve release and rollback evidence
         if: always()
         uses: actions/upload-artifact@v4

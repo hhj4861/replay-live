@@ -12,6 +12,7 @@ import GoogleSignIn from './google-sign-in';
 import PlatformPicker, { broadcastDestination, destinationReady, type StreamTarget, type Destination } from './platform-picker';
 import BroadcastWatchLinks, { type BroadcastLinks } from './broadcast-watch-links';
 import MemberManagement from './member-management';
+import AutomationPanel from './automation-panel';
 import { canManageMembers, type Account } from '@/lib/member-management';
 import { createMediaSelection } from './media-selection';
 import { createStudioConfigCache, sourceDurationFailure, storageBreakdown } from '@/lib/studio-data';
@@ -84,7 +85,8 @@ export default function CommercialHome() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [roles, setRoles] = useState<string[]>([]);
   const [account, setAccount] = useState<Account>();
-  const [managementView, setManagementView] = useState<'account' | 'members' | ''>('');
+  const [automationsEnabled, setAutomationsEnabled] = useState(false);
+  const [managementView, setManagementView] = useState<'account' | 'members' | 'automations' | ''>('');
   const managementTrigger = useRef<HTMLButtonElement | null>(null);
   const [mediaId, setMediaId] = useState('');
   const [preview, setPreview] = useState<{ id: string; url: string } | null>(null);
@@ -161,12 +163,21 @@ export default function CommercialHome() {
     setSourceCatalog(undefined); setSourceMode('link'); setSourceProvider('youtube'); setSourceUrl(''); setSourceName(''); setImportId('');
     connectionStoreRef.current = undefined; connectionOwnerRef.current = undefined; connectionListVersion.current += 1;
     setConnectionOwner(undefined); setConnectionStore(undefined); setSavedConnections({}); setConnectionStorageError('');
-    setAccount(undefined); setManagementView(''); managementTrigger.current = null;
+    setAccount(undefined); setAutomationsEnabled(false); setManagementView(''); managementTrigger.current = null;
   }, [connectionAutofill, mediaSelection, configCache]);
   useEffect(() => {
     window.addEventListener('replay-signin-required', resetAccount);
     return () => window.removeEventListener('replay-signin-required', resetAccount);
   }, [resetAccount]);
+
+  useEffect(() => {
+    const sync = () => {
+      if (window.location.hash === '#automations') setManagementView('automations');
+      else setManagementView(current => current === 'automations' ? '' : current);
+    };
+    sync(); window.addEventListener('hashchange', sync);
+    return () => window.removeEventListener('hashchange', sync);
+  }, []);
 
   useEffect(() => { let alive = true; void completeSignIn().then(value => { if (alive) setAuthenticated(value); }).catch(() => { if (alive) setError('로그인 연결을 확인할 수 없습니다. 다시 시도하세요.'); }).finally(() => { if (alive) setInitializing(false); }); return () => { alive = false; }; }, []);
   const refresh = useCallback(async (signal?: AbortSignal) => {
@@ -266,7 +277,12 @@ export default function CommercialHome() {
     let timer: ReturnType<typeof setTimeout>;
     async function initialize() {
       try {
-        const store = await createStreamConnectionStore(connectionOwner!, connectionOwner!.identity);
+        let location = streamConnectionLocation();
+        const automations = await api<{ enabled: boolean }>('/automations', { signal: AbortSignal.timeout(10000) });
+        if (!active) return;
+        setAutomationsEnabled(automations.enabled);
+        if (location === 'browser' && automations.enabled) location = 'account';
+        const store = await createStreamConnectionStore(connectionOwner!, connectionOwner!.identity, location);
         if (!active) return;
         connectionStoreRef.current = store; setConnectionStore(store);
         const poll = async () => {
@@ -547,8 +563,9 @@ export default function CommercialHome() {
   </main>;
   return <main className="studio replay-studio">
     <header className="topbar studio-topbar member-topbar"><a href="#studio-top" className="brand" onClick={() => { setManagementView(''); }}><span className="studio-brand-icon"><Radio size={22} /></span><strong>Replay Live</strong></a><nav aria-label="스튜디오 메뉴"><a href="#broadcast-history" onClick={() => { setManagementView(''); }}><History size={16} />방송 이력{activeJobs.length > 0 && <span className="studio-nav-count">{activeJobs.length}</span>}</a>
-      <Button variant="ghost" className="member-nav-button" disabled={!account || !!busy} aria-pressed={managementView === 'account'} onClick={event => { managementTrigger.current = event.currentTarget; setManagementView('account'); }}><UserRound size={16} />내 계정</Button>
-      {canManageMembers(account) && <Button variant="ghost" className="member-nav-button" disabled={!!busy} aria-pressed={managementView === 'members'} onClick={event => { managementTrigger.current = event.currentTarget; setManagementView('members'); }}><Users size={16} />회원 관리</Button>}
+      {canOperate && automationsEnabled && <a href="#automations" aria-current={managementView === 'automations' ? 'page' : undefined} onClick={() => setManagementView('automations')}><CalendarClock size={16} />자동 송출</a>}
+      <Button variant="ghost" className="member-nav-button" disabled={!account || !!busy} aria-pressed={managementView === 'account'} onClick={event => { managementTrigger.current = event.currentTarget; setManagementView('account'); window.location.hash = 'account'; }}><UserRound size={16} />내 계정</Button>
+      {canManageMembers(account) && <Button variant="ghost" className="member-nav-button" disabled={!!busy} aria-pressed={managementView === 'members'} onClick={event => { managementTrigger.current = event.currentTarget; setManagementView('members'); window.location.hash = 'members'; }}><Users size={16} />회원 관리</Button>}
     </nav><div className="connection"><span className="studio-connection-status"><i className={connected ? 'online' : ''} />{connected ? '스튜디오 연결됨' : account ? '재연결 중' : '계정 확인 중…'}</span><Button variant="ghost" disabled={!!busy} onClick={() => {
       const revocation = revokeCurrentSession();
       resetAccount();
@@ -558,7 +575,10 @@ export default function CommercialHome() {
         if (identity === sessionIdentity() && (!revoked || !signedOut)) setError('이 기기에서는 로그아웃했습니다. 서버나 로그인 제공자의 세션 종료는 확인하지 못했습니다.');
       });
     }}>로그아웃</Button></div></header>
-    {managementView && account && connectionOwner ? <MemberManagement key={`${connectionOwner.identity}:${connectionOwner.tenant_id}:${connectionOwner.subject}:${managementView}`}
+    {managementView === 'automations' && canOperate ? <AutomationPanel key={sessionIdentity()} media={media} platformChoices={catalog?.targets || []}
+      onBack={() => { setManagementView(''); window.location.hash = 'studio-top'; }}
+      onPrepareMedia={() => { setManagementView(''); window.location.hash = 'source-title'; }} />
+      : managementView && managementView !== 'automations' && account && connectionOwner ? <MemberManagement key={`${connectionOwner.identity}:${connectionOwner.tenant_id}:${connectionOwner.subject}:${managementView}`}
       mode={managementView} identity={connectionOwner.identity} account={account} targets={catalog?.targets || []}
       connections={Object.values(savedConnections)} location={connectionStore?.location ?? streamConnectionLocation()} connectionError={connectionStorageError}
       canEditConnections={canOperate && !!connectionStore} disabled={!!busy || !connected} onClose={closeManagement}
