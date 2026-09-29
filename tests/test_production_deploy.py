@@ -202,3 +202,27 @@ def test_smoke_rejects_stale_web_even_when_api_is_current(monkeypatch):
     monkeypatch.setattr(release.time, 'sleep', lambda _seconds: None)
     with pytest.raises(release.ReleaseError, match='PRODUCTION_SMOKE_FAILED'):
         release.smoke(SHA, 'snap_test', 'rpl-test')
+
+
+@pytest.mark.parametrize('health,accepted', [
+    ({'status': 'alive', 'version': 'rpl-test'}, True),
+    ({'status': 'alive', 'version': 'rpl-test', 'automations_enabled': True}, True),
+    ({'status': 'alive', 'version': 'old', 'automations_enabled': True}, False),
+    ({'status': 'failed', 'version': 'rpl-test', 'automations_enabled': True}, False),
+    ({'status': 'alive', 'automations_enabled': True}, False),
+])
+def test_smoke_accepts_feature_metadata_without_weakening_release_check(monkeypatch, health, accepted):
+    monkeypatch.setattr(release, 'public_json', lambda url: (
+        health if '/api/live' in url else {'commit': SHA, 'snapshot_id': 'snap_test'}))
+    class Response:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def read(self, _size): return b'<script src="/assets/index.js"></script>'
+    monkeypatch.setattr(release.urllib.request, 'urlopen', lambda *_args, **_kwargs: Response())
+    monkeypatch.setattr(release.time, 'sleep', lambda _seconds: None)
+    if accepted:
+        release.smoke(SHA, 'snap_test', 'rpl-test')
+    else:
+        with pytest.raises(release.ReleaseError, match='PRODUCTION_SMOKE_FAILED'):
+            release.smoke(SHA, 'snap_test', 'rpl-test')
