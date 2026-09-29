@@ -33,6 +33,7 @@ from urllib.parse import parse_qs, unquote, urljoin, urlsplit, urlunsplit
 import certifi
 
 from .media_runtime import _execute
+from .source_diagnostics import FAILURE_REASONS, SourceFailure
 
 
 _PROVIDERS = (
@@ -76,9 +77,12 @@ _MAX_SEGMENTS = 4096
 
 
 class SourceImportError(ValueError):
-    def __init__(self, code='SOURCE_UNAVAILABLE'):
+    def __init__(self, code='SOURCE_UNAVAILABLE', *, reason='unclassified', http_status=None):
         # Only our fixed codes are exposed; never include extractor exceptions.
         self.code = code if re.fullmatch(r'SOURCE_[A-Z_]+', str(code)) else 'SOURCE_UNAVAILABLE'
+        self.reason = reason if isinstance(reason, str) and reason in FAILURE_REASONS else 'unclassified'
+        self.http_status = http_status if type(http_status) is int and 100 <= http_status <= 599 else None
+        self.diagnostics = None
         super().__init__(self.code)
 
 
@@ -391,7 +395,9 @@ class _ProxyHTTPSConnection(_PinnedHTTPSConnection):
                 header.extend(chunk)
                 self.budget.consume_wire(1)
             if not re.match(rb'HTTP/1\.[01] 200(?: |\r)', header):
-                raise SourceImportError('SOURCE_PROXY_UNAVAILABLE')
+                status = re.match(rb'HTTP/1\.[01] ([1-5][0-9]{2})(?: |\r)', header)
+                raise SourceImportError('SOURCE_PROXY_UNAVAILABLE', reason='proxy_rejected',
+                                        http_status=int(status[1]) if status else None)
             self.sock = _BudgetedSocket(self._context.wrap_socket(raw, server_hostname=self.host), self.budget)
         except BaseException:
             raw.close()
@@ -508,9 +514,13 @@ class _Transport:
                 current = next_url
         except SourceImportError:
             raise
-        except (OSError, http.client.HTTPException, ValueError):
+        except (OSError, http.client.HTTPException, ValueError) as error:
             self.budget.check()
-            raise SourceImportError('SOURCE_UNAVAILABLE') from None
+            reason = ('network_timeout' if isinstance(error, TimeoutError) else
+                      'tls_error' if isinstance(error, ssl.SSLError) else
+                      'connection_reset' if isinstance(error, (ConnectionResetError, BrokenPipeError)) else
+                      'connection_error')
+            raise SourceImportError('SOURCE_UNAVAILABLE', reason=reason) from None
         finally:
             if response is not None:
                 response.close()
@@ -562,7 +572,8 @@ class _Transport:
             try:
                 with self.response(url, headers=headers) as (response, _):
                     if response.status != 200:
-                        raise SourceImportError(_http_error_code(response.status))
+                        raise SourceImportError(_http_error_code(response.status), reason='http_error',
+                                                http_status=response.status)
                     for chunk in self._read(response, metadata=False, limit=self.budget.max_bytes - self.budget.media_bytes):
                         file.write(chunk)
                 return
@@ -675,7 +686,7 @@ def _extract(source, transport):
         transport.budget.check()
         if isinstance(error, SourceImportError):
             raise
-        raise SourceImportError(_extractor_error_code(error)) from None
+        raise SourceImportError(_extractor_error_code(error), reason='extractor_error') from None
 
 
 def _recording(info, max_duration):
@@ -941,6 +952,13 @@ def download_source(source, output: Path, *, max_bytes: int, max_duration: float
         logging.getLogger(__name__).info(json.dumps({'event': 'source_import_stage', 'stage': stage,
             'elapsed_ms': round((time.monotonic() - stage_started) * 1000), 'retries': budget.retries}))
 
+    def record_failure(error):
+        error.diagnostics = SourceFailure(stage=stage, reason=error.reason,
+            elapsed_ms=max(0, min(14_400_000, round((time.monotonic() - started) * 1000))),
+            retries=budget.retries, http_status=error.http_status)
+        logging.getLogger(__name__).info(json.dumps({'event': 'source_import_failed',
+            'code': error.code, **error.diagnostics.model_dump(exclude_none=True)}))
+
     try:
         budget.check()
         with tempfile.TemporaryDirectory(prefix='source-', dir=output.parent) as directory:
@@ -988,13 +1006,14 @@ def download_source(source, output: Path, *, max_bytes: int, max_duration: float
             result['source_title'] = source_title
         return result
     except SourceImportError as error:
-        logging.getLogger(__name__).info(json.dumps({'event': 'source_import_failed', 'stage': stage,
-            'code': error.code, 'elapsed_ms': round((time.monotonic() - started) * 1000), 'retries': budget.retries}))
+        record_failure(error)
         raise
     except Exception as error:
         if error is budget.cancel_error:
             raise
-        raise SourceImportError('SOURCE_UNAVAILABLE') from None
+        failure = SourceImportError('SOURCE_UNAVAILABLE', reason='unexpected_error')
+        record_failure(failure)
+        raise failure from None
     finally:
         if not complete:
             output.unlink(missing_ok=True)
