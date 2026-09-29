@@ -46,7 +46,7 @@ const credentials = { token: auth.token, teamId: linked.orgId, projectId: linked
 const policySource = await readFile(path.join(root, 'web/lib/worker-network-policy.ts'), 'utf8');
 const cidrs = [...policySource.matchAll(/'([0-9.]+\/\d+)'/g)].map(match => match[1]);
 if (cidrs.length < 50 || cidrs.includes('0.0.0.0/0')) throw new Error('Invalid public egress policy');
-const sources = ['scripts/youtube-server-probe.py', 'scripts/probe_proxy_budget.py', 'server/__init__.py', 'server/media_sources.py', 'server/media_runtime.py', 'server/output_policy.py'];
+const sources = ['scripts/youtube-server-probe.py', 'scripts/probe_proxy_budget.py', 'server/__init__.py', 'server/media_sources.py', 'server/source_diagnostics.py', 'server/media_runtime.py', 'server/output_policy.py'];
 const payload = await Promise.all(sources.map(async file => ({path: `/vercel/sandbox/replay/${file}`, content: await readFile(path.join(root, file))})));
 const report = {started_at: new Date().toISOString(), video_id: videoId, base_snapshot: snapshotId, region_requested: region,
   production_changed: false, local_daemon_used: false, youtube_credentials_used: false, proxy_used: proxyOnly,
@@ -75,7 +75,7 @@ try {
 cd /vercel/sandbox
 if ! command -v ffmpeg >/dev/null; then sudo apt-get update -qq; sudo apt-get install -y -qq ffmpeg; fi
 python3 -m venv candidate
-candidate/bin/pip install --disable-pip-version-check 'yt-dlp[default]==2026.8.19'
+candidate/bin/pip install --disable-pip-version-check 'yt-dlp[default]==2026.8.19' 'pydantic==2.13.5'
 node --version
 command -v ffmpeg
 `],timeoutMs:180_000});
