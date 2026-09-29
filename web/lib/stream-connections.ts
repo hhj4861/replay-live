@@ -190,7 +190,7 @@ async function unseal(key: CryptoKey, owner: string, target: string, field: stri
   try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); } finally { bytes.fill(0); }
 }
 
-export async function createStreamConnectionStore(owner: StreamConnectionOwner, identity = sessionIdentity()): Promise<StreamConnectionStore> {
+export async function createStreamConnectionStore(owner: StreamConnectionOwner, identity = sessionIdentity(), location = streamConnectionLocation()): Promise<StreamConnectionStore> {
   assertSessionIdentity(identity);
   if (!owner || typeof owner.tenant_id !== 'string' || !owner.tenant_id || owner.tenant_id.length > 1024
       || typeof owner.subject !== 'string' || !owner.subject || owner.subject.length > 1024) {
@@ -200,8 +200,8 @@ export async function createStreamConnectionStore(owner: StreamConnectionOwner, 
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(['replay-connection-owner-v1', owner.tenant_id, owner.subject])));
   assertSessionIdentity(identity);
   const namespace = Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
-  const location = streamConnectionLocation();
-  const guard = () => { assertSessionIdentity(identity); if (streamConnectionLocation() !== location) throw new Error('저장 위치가 변경되었습니다. 화면을 새로 열어주세요.'); };
+  const pageLocation = streamConnectionLocation();
+  const guard = () => { assertSessionIdentity(identity); if (streamConnectionLocation() !== pageLocation) throw new Error('저장 위치가 변경되었습니다. 화면을 새로 열어주세요.'); };
   async function safely<T>(message: string, task: () => Promise<T>): Promise<T> {
     guard();
     try { const value = await task(); guard(); return value; }

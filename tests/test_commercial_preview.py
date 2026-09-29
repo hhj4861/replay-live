@@ -22,6 +22,27 @@ SPEC.loader.exec_module(preview)
 CLIENT_ID = '12345-previewfixture.apps.googleusercontent.com'
 
 
+def test_preview_reports_removed_video_limits_and_retains_account_quota(tmp_path):
+    from test_commercial_api import TestAuth
+    cfg = preview.preview_settings(tmp_path, 'http://testserver', 'http://ui.test')
+    repo = preview.Repository(cfg.database_url, create_schema=True, max_storage_bytes=cfg.max_storage_bytes)
+    objects = preview.LocalStorage(tmp_path / 'objects', signing_key=cfg.callback_key,
+                                   base_url=cfg.public_url, allow_development=True)
+    keys = preview.LocalKeyringProvider({'preview': preview.Fernet.generate_key()}, 'preview', mode='development')
+    app = preview.create_production_app(cfg, repository=repo, storage=objects, keys=keys, authenticator=TestAuth())
+    app.state.access_policy.migrate()
+    app.state.operations.migrate()
+    with TestClient(app, headers={'Authorization': 'Bearer alpha'}) as client:
+        limits = client.get('/api/limits').json()
+        assert limits['max_duration_seconds'] == limits['max_upload_mb'] == 0
+        # Files larger than the former 50 MiB limit are admitted within the account quota.
+        accepted = client.post('/api/uploads', json={'name': 'long.mp4', 'bytes': 60 * 1024**2, 'sha256': 'a' * 64})
+        assert accepted.status_code == 201
+        rejected = client.post('/api/uploads', json={'name': 'quota-overflow.mp4', 'bytes': 200 * 1024**2, 'sha256': 'b' * 64})
+        assert rejected.status_code == 409 and rejected.json()['code'] == 'QuotaExceeded'
+        assert repo.usage('alpha')['storage_limit_bytes'] == 256 * 1024**2
+
+
 @pytest.fixture(autouse=True)
 def empty_google_environment(monkeypatch):
     for name in preview.GOOGLE_ENV_KEYS:

@@ -45,7 +45,7 @@ class Platform:
 
 @pytest.fixture
 def runtime(monkeypatch, tmp_path):
-    monkeypatch.setattr(release, 'assert_current_main', lambda _sha: None)
+    monkeypatch.setattr(release, 'assert_current_release', lambda _sha: None)
     monkeypatch.setattr(release, 'smoke', lambda *_args: None)
     return Platform(), tmp_path, {'status': 'preflight'}, []
 
@@ -114,28 +114,39 @@ def test_concurrent_release_is_not_overwritten_during_rollback(runtime, monkeypa
     assert runtime[2]['status'] == 'manual_recovery_required'
 
 
-def test_newer_main_commit_during_build_prevents_promotion(runtime, monkeypatch):
+def test_newer_release_commit_during_build_prevents_promotion(runtime, monkeypatch):
     def stale(_sha):
-        raise release.ReleaseError('SUPERSEDED_MAIN_COMMIT')
-    monkeypatch.setattr(release, 'assert_current_main', stale)
-    with pytest.raises(release.ReleaseError, match='SUPERSEDED_MAIN_COMMIT'):
+        raise release.ReleaseError('SUPERSEDED_RELEASE_COMMIT')
+    monkeypatch.setattr(release, 'assert_current_release', stale)
+    with pytest.raises(release.ReleaseError, match='SUPERSEDED_RELEASE_COMMIT'):
         publish(runtime)
     assert runtime[0].events == [('stage', 'api'), ('stage', 'web')]
 
 
 @pytest.mark.parametrize(('ref', 'event', 'head', 'remote', 'expected'), [
-    ('refs/heads/develop', 'push', SHA, SHA, 'MAIN_COMMIT_REQUIRED'),
-    ('refs/heads/main', 'pull_request', SHA, SHA, 'MAIN_COMMIT_REQUIRED'),
-    ('refs/heads/main', 'push', 'b' * 40, SHA, 'MAIN_COMMIT_REQUIRED'),
-    ('refs/heads/main', 'push', SHA, 'b' * 40, 'SUPERSEDED_MAIN_COMMIT'),
+    ('refs/heads/main', 'push', SHA, SHA, 'PROTECTED_RELEASE_COMMIT_REQUIRED'),
+    ('refs/heads/develop', 'push', SHA, SHA, 'PROTECTED_RELEASE_COMMIT_REQUIRED'),
+    ('refs/heads/deploy/replay', 'pull_request', SHA, SHA, 'PROTECTED_RELEASE_COMMIT_REQUIRED'),
+    ('refs/heads/deploy/replay', 'push', 'b' * 40, SHA, 'PROTECTED_RELEASE_COMMIT_REQUIRED'),
+    ('refs/heads/deploy/replay', 'push', SHA, 'b' * 40, 'SUPERSEDED_RELEASE_COMMIT'),
 ])
 def test_unsafe_or_stale_trigger_is_rejected(monkeypatch, ref, event, head, remote, expected):
     monkeypatch.setenv('GITHUB_REPOSITORY', 'hhj4861/replay-live')
+    monkeypatch.setenv('GITHUB_REF_PROTECTED', 'true')
     monkeypatch.setenv('GITHUB_REF', ref)
     monkeypatch.setenv('GITHUB_EVENT_NAME', event)
-    monkeypatch.setattr(release, 'run', lambda args: head if 'rev-parse' in args else remote + '\trefs/heads/main')
+    monkeypatch.setattr(release, 'run', lambda args: head if 'rev-parse' in args else remote + '\trefs/heads/deploy/replay')
     with pytest.raises(release.ReleaseError, match=expected):
-        release.assert_current_main(SHA)
+        release.assert_current_release(SHA)
+
+
+def test_unprotected_release_ref_fails_before_git_or_cloud(monkeypatch):
+    monkeypatch.setenv('GITHUB_REPOSITORY', 'hhj4861/replay-live')
+    monkeypatch.setenv('GITHUB_REF', 'refs/heads/deploy/replay')
+    monkeypatch.setenv('GITHUB_REF_PROTECTED', 'false')
+    monkeypatch.setattr(release, 'run', lambda *_: pytest.fail('Must reject before Git'))
+    with pytest.raises(release.ReleaseError, match='PROTECTED_RELEASE_COMMIT_REQUIRED'):
+        release.assert_current_release(SHA)
 
 
 def test_source_package_excludes_untracked_secrets_and_adds_public_identity(tmp_path, monkeypatch):
@@ -192,3 +203,26 @@ def test_smoke_rejects_stale_web_even_when_api_is_current(monkeypatch):
     with pytest.raises(release.ReleaseError, match='PRODUCTION_SMOKE_FAILED'):
         release.smoke(SHA, 'snap_test', 'rpl-test')
 
+
+@pytest.mark.parametrize('health,accepted', [
+    ({'status': 'alive', 'version': 'rpl-test'}, True),
+    ({'status': 'alive', 'version': 'rpl-test', 'automations_enabled': True}, True),
+    ({'status': 'alive', 'version': 'old', 'automations_enabled': True}, False),
+    ({'status': 'failed', 'version': 'rpl-test', 'automations_enabled': True}, False),
+    ({'status': 'alive', 'automations_enabled': True}, False),
+])
+def test_smoke_accepts_feature_metadata_without_weakening_release_check(monkeypatch, health, accepted):
+    monkeypatch.setattr(release, 'public_json', lambda url: (
+        health if '/api/live' in url else {'commit': SHA, 'snapshot_id': 'snap_test'}))
+    class Response:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def read(self, _size): return b'<script src="/assets/index.js"></script>'
+    monkeypatch.setattr(release.urllib.request, 'urlopen', lambda *_args, **_kwargs: Response())
+    monkeypatch.setattr(release.time, 'sleep', lambda _seconds: None)
+    if accepted:
+        release.smoke(SHA, 'snap_test', 'rpl-test')
+    else:
+        with pytest.raises(release.ReleaseError, match='PRODUCTION_SMOKE_FAILED'):
+            release.smoke(SHA, 'snap_test', 'rpl-test')

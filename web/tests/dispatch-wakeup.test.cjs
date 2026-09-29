@@ -57,12 +57,14 @@ function fixture(overrides = {}) {
     } },
     Date: class extends Date { static now() { return state.nowMillis; } },
     fetch: async (url, init) => {
-      const operation = url.endsWith('/api/live') ? 'live' : url.endsWith('/internal/next-wakeup') ? 'next' : 'unrecognized';
+      const operation = url.endsWith('/api/live') ? 'live' : url.endsWith('/internal/next-wakeup') ? 'next'
+        : url.endsWith('/internal/automations/tick') ? 'automations' : 'unrecognized';
       calls.push({ operation, url, init });
       if (state.fetchError) throw state.fetchError;
       if (state.responses[operation]) return state.responses[operation]();
       if (operation === 'live') return Response.json(state.health);
       if (operation === 'next') return Response.json({ at: state.at });
+      if (operation === 'automations') return Response.json({ processed: 1 });
       throw new Error('Unmocked networking is forbidden');
     } };
   const helper = load('lib/dispatch-wakeup.ts', globals, { '@vercel/queue': sdk });
@@ -86,6 +88,33 @@ test('POST sends only immediate v1 metadata with region and seven-day retention'
   assert.deepEqual(await response.json(), { accepted: true });
   assert.deepEqual(f.calls, [{ operation: 'send', topic: 'replay-dispatch', message: { v: 1 },
     options: { region: 'iad1', retentionSeconds: 604800 } }]);
+});
+
+test('matching production release advances automations before dispatch and schedules its durable next deadline', async () => {
+  const f = fixture();
+  f.state.health.automations_enabled = true;
+  f.state.at = f.state.nowMillis / 1000 + 60;
+  await f.helper.consumeDispatchWakeup({ v: 1 }, f.dispatch);
+  assert.deepEqual(f.calls.map(call => call.operation), ['live', 'automations', 'dispatch', 'next', 'send']);
+  const tick = f.calls.find(call => call.operation === 'automations');
+  assert.equal(tick.init.headers.Authorization, `Bearer ${f.env.REPLAY_CONTROL_TOKEN}`);
+  assert.equal(tick.init.redirect, 'error');
+  assert.equal(tick.init.body, '{}');
+});
+
+test('failed automation tick retries instead of silently losing the schedule chain', async () => {
+  const f = fixture();
+  f.state.health.automations_enabled = true;
+  f.state.responses.automations = () => new Response('private upstream detail', { status: 503 });
+  await assert.rejects(f.helper.consumeDispatchWakeup({ v: 1 }, f.dispatch), /^Error: Dispatch wakeup unavailable$/);
+  assert.deepEqual(f.calls.map(call => call.operation), ['live', 'automations']);
+});
+
+test('stale deployment cannot advance automatic broadcasts', async () => {
+  const f = fixture();
+  f.state.health = { version: 'another-release', automations_enabled: true };
+  await f.helper.consumeDispatchWakeup({ v: 1 }, f.dispatch);
+  assert.deepEqual(f.calls.map(call => call.operation), ['live']);
 });
 
 test('empty POST and cron GET both wake, without introducing a deduplication key', async () => {

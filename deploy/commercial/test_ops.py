@@ -24,7 +24,23 @@ def test_explicit_migration_is_repeatable_and_reports_schema(tmp_path):
             result = summary(connection)
         assert result['table_counts']['replay_jobs'] == 0
         assert result['table_counts']['replay_coordination'] == 1
+        assert result['table_counts']['replay_youtube_broadcasts'] == 0
         assert len(result['migrations']) >= 2
+    finally:
+        repo.close()
+
+
+def test_release_schema_requires_managed_youtube_broadcasts(tmp_path):
+    from deploy.commercial.ops import check_schema
+    from sqlalchemy.exc import NoSuchTableError
+    value = f'sqlite:///{tmp_path}/missing-live.db'
+    migrate(value, development=True)
+    repo = Repository(value)
+    try:
+        with repo.engine.begin() as connection:
+            connection.exec_driver_sql('DROP TABLE replay_youtube_broadcasts')
+            with pytest.raises(NoSuchTableError):
+                check_schema(connection)
     finally:
         repo.close()
 
