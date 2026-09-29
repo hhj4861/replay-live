@@ -14,6 +14,7 @@ from .auth import Principal
 from .repository import NotFound, RepositoryError, QuotaExceeded, LeaseLost
 from .stream_connections import StreamConnections
 from .youtube_channel import ChannelError
+from .youtube_live import YouTubeLive, metadata as live_metadata
 
 
 metadata = MetaData()
@@ -69,7 +70,11 @@ def validate_config(payload):
     media_id = payload.get('media_id')
     if source == 'media' and (not isinstance(media_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', media_id)):
         raise ValueError('반복 송출할 보관함 영상을 선택해 주세요.')
-    return name, {'source': source, 'media_id': media_id if source == 'media' else None,
+    privacy = payload.get('youtube_privacy', 'unlisted')
+    kids = payload.get('youtube_made_for_kids', False)
+    if privacy not in ('public', 'unlisted', 'private') or type(kids) is not bool:
+        raise ValueError('YouTube 공개 범위와 아동용 여부를 확인해 주세요.')
+    return name, {'youtube_privacy': privacy, 'youtube_made_for_kids': kids, 'source': source, 'media_id': media_id if source == 'media' else None,
                   'targets': targets, 'time': payload['time'], 'timezone': payload['timezone'],
                   'weekdays': sorted(set(days))}
 
@@ -78,11 +83,13 @@ class Automations:
     def __init__(self, repo, keys, connections, channel, objects, cfg, *, clock=time.time):
         self.repo, self.keys, self.connections, self.channel = repo, keys, connections, channel
         self.objects, self.cfg, self.clock = objects, cfg, clock
+        self.live = YouTubeLive(repo, channel, clock=lambda: self.clock())
 
     def migrate(self):
         metadata.create_all(self.repo.engine)
         from .youtube_channel import metadata as youtube_metadata
         youtube_metadata.create_all(self.repo.engine)
+        live_metadata.create_all(self.repo.engine)
 
     @staticmethod
     def scope(user):
@@ -99,12 +106,15 @@ class Automations:
                     .order_by(runs.c.created.desc()).limit(10)).mappings().all()
                 result.append({'id': row['id'], 'name': row['name'], **json.loads(row['config_json']),
                     'enabled': row['enabled'], 'next_run': row['next_run'], 'active': bool(row['active_run']),
-                    'history': [{k: r[k] for k in ('id', 'state', 'scheduled_for', 'video_id', 'media_id', 'error_code', 'updated')} for r in history]})
+                    'history': [{**{k: r[k] for k in ('id', 'state', 'scheduled_for', 'video_id', 'media_id', 'error_code', 'updated')},
+                        'youtube': self.live.public(user, r['id'])} for r in history]})
         return result
 
     def destinations(self, user, targets):
         if len(targets) > min(self.repo.tenant_concurrency, self.repo.global_concurrency):
             raise ValueError('동시 송출할 수 있는 플랫폼 수를 초과했습니다.')
+        if 'youtube' in targets and not self.channel.status(user).get('live_authorized'):
+            raise ChannelError('YOUTUBE_LIVE_PERMISSION_REQUIRED')
         destinations = [self.connections.use(user, target) for target in targets]
         endpoints = [d['server_url'].rstrip('/') + '/' + d['stream_key'] for d in destinations]
         if len(set(endpoints)) != len(endpoints):
@@ -189,6 +199,8 @@ class Automations:
             self.repo._check_admission(connection, user.tenant_id)
             run = dict(connection.execute(select(runs).where(runs.c.id == rule['active_run'])).mappings().one())
         if run['state'] == 'checking':
+            if 'youtube' in config['targets'] and not self.channel.status(user).get('live_authorized'):
+                raise ChannelError('YOUTUBE_LIVE_PERMISSION_REQUIRED')
             if config['source'] == 'youtube_latest':
                 if self.cfg.mode == 'production' and not self.cfg.server_imports:
                     raise ChannelError('SERVER_IMPORTS_DISABLED')
@@ -224,12 +236,16 @@ class Automations:
                 self.record(rule, state='failed', error_code=media.get('error_code') or 'IMPORT_FAILED')
             return
         if run['state'] == 'ready':
+            media = self.repo.get_media(user.tenant_id, run['media_id'])
             destinations = []
             for value in self.destinations(user, config['targets']):
+                watch_url = self.live.prepare(user, run['id'], media['name'], value,
+                    privacy=config.get('youtube_privacy', 'unlisted'),
+                    made_for_kids=config.get('youtube_made_for_kids', False), guard=lambda: self.record(rule)) if value['target'] == 'youtube' else ''
                 payload = {key: value[key] for key in ('target', 'server_url', 'stream_key')}
                 destinations.append({'target': value['target'],
                     'secret_ciphertext': self.keys.encrypt(json.dumps(payload), {'tenant_id': user.tenant_id}),
-                    'channel_url': value.get('channel_url', ''), 'broadcast_url': ''})
+                    'channel_url': value.get('channel_url', ''), 'broadcast_url': watch_url})
             media = self.repo.get_media(user.tenant_id, run['media_id'])
             identity = 'automation-broadcast-' + run['id']
             result = self.repo.create_jobs_batch(user.tenant_id, media_id=run['media_id'],
@@ -239,7 +255,18 @@ class Automations:
             return
         if run['state'] == 'broadcasting':
             jobs = [self.repo.get_job(user.tenant_id, job) for job in json.loads(run['jobs_json'])]
-            if all(job['state'] in ('completed', 'failed', 'stopped') for job in jobs):
+            ended = all(job['state'] in ('completed', 'failed', 'stopped') for job in jobs)
+            if 'youtube' in config['targets']:
+                confirmed = self.live.observe(user, run['id'], ended=ended, guard=lambda: self.record(rule))
+                if not confirmed:
+                    if ended and self.clock() - max(job['updated'] for job in jobs) > 180:
+                        raise ChannelError('YOUTUBE_FINALIZATION_UNCONFIRMED')
+                    if not ended and self.clock() - min(job['created'] for job in jobs) > 180:
+                        detail = self.live.public(user, run['id'])
+                        if not detail or not detail['live_confirmed']:
+                            raise ChannelError('YOUTUBE_LIVE_NOT_STARTED')
+                    return
+            if ended:
                 success = all(job['state'] == 'completed' for job in jobs)
                 self.record(rule, state='completed' if success else 'failed',
                             error_code=None if success else 'BROADCAST_FAILED')
@@ -261,7 +288,18 @@ class Automations:
                     'CONNECTION_REQUIRED' if isinstance(error, HTTPException) and error.status_code == 404
                     else 'STORAGE_OR_JOB_QUOTA' if isinstance(error, QuotaExceeded) else 'AUTOMATION_FAILED')
                 try:
+                    self.record(rule)  # A stale coordinator must not cancel another owner's jobs.
+                    # Stop admitted jobs when platform verification fails. Auto-stop
+                    # remains enabled on our YouTube broadcast as a final safeguard.
+                    with self.repo.engine.connect() as connection:
+                        current = connection.execute(select(runs).where(runs.c.id == rule['active_run'])).mappings().one()
+                    for job_id in json.loads(current['jobs_json']):
+                        self.repo.cancel(rule['tenant_id'], job_id)
                     self.record(rule, state='failed', error_code=code)
+                    if code.startswith('YOUTUBE_'):
+                        with self.repo._transaction() as connection:
+                            connection.execute(update(schedules).where(schedules.c.id == rule['id'],
+                                schedules.c.lease_token == rule['lease_token']).values(enabled=False))
                 except LeaseLost:
                     pass
             finally:
@@ -290,6 +328,11 @@ def install_automations(app, cfg, repo, keys, connections, objects, writer, cont
             raise HTTPException(404, '자동 송출이 활성화되지 않았습니다.')
 
     messages = {
+        'YOUTUBE_LIVE_NOT_ENABLED': 'YouTube Studio에서 연결한 채널의 실시간 스트리밍을 활성화해 주세요. 최초 활성화는 최대 24시간 걸릴 수 있습니다.',
+        'YOUTUBE_LIVE_PERMISSION_REQUIRED': 'YouTube 방송 관리 권한을 연결해 주세요. 스트림 키만으로는 자동 방송을 시작할 수 없습니다.',
+        'YOUTUBE_STREAM_KEY_MISMATCH': '연결한 YouTube 채널의 스트림 키인지 확인해 주세요.',
+        'YOUTUBE_STREAM_IN_USE': '이미 사용 중인 YouTube 스트림입니다. 기존 방송이 끝난 뒤 다시 시도해 주세요.',
+        'YOUTUBE_CREATE_UNCONFIRMED': 'YouTube 방송 생성 결과를 확인하지 못했습니다. Studio에서 확인한 뒤 다시 예약해 주세요.',
         'YOUTUBE_NOT_CONFIGURED': 'YouTube 채널 연결 설정이 아직 준비되지 않았습니다.',
         'YOUTUBE_RECONNECT_REQUIRED': 'YouTube 채널을 다시 연결해 주세요.',
         'YOUTUBE_CHANNEL_REQUIRED': '영상을 보유한 YouTube 채널을 선택해 주세요.',
@@ -340,8 +383,8 @@ def install_automations(app, cfg, repo, keys, connections, objects, writer, cont
         return {'ok': True}
 
     @app.post('/api/youtube-channel/connect', dependencies=[Depends(require_enabled)])
-    def connect(user=Depends(writer)):
-        return channel.begin(user)
+    def connect(live: bool = Query(False), user=Depends(writer)):
+        return channel.begin(user, live=live)
 
     @app.delete('/api/youtube-channel', dependencies=[Depends(require_enabled)])
     def disconnect(user=Depends(writer)):

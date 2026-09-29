@@ -16,11 +16,11 @@ function mediaDetails(item: Media) {
   const seconds = Math.max(0, Math.floor(item.duration || 0));
   return `${Math.floor(seconds / 60)}분 ${seconds % 60}초 · ${((item.bytes || 0) / 1048576).toFixed(1)} MiB`;
 }
-type Run = { id: string; state: string; scheduled_for: number; error_code: string | null };
+type Run = { id: string; state: string; scheduled_for: number; error_code: string | null; youtube?: { watch_url: string; state: string; live_confirmed: boolean } | null };
 type Schedule = { id: string; name: string; enabled: boolean; active: boolean; next_run: number;
   source: string; time: string; timezone: string; weekdays: number[]; targets: string[]; history: Run[] };
 type Data = { enabled: boolean; items: Schedule[]; connections?: StreamConnectionMetadata[];
-  youtube?: { configured: boolean; connected: boolean; channel: { title: string } | null } };
+  youtube?: { configured: boolean; connected: boolean; live_authorized: boolean; channel: { title: string } | null } };
 const days = ['월', '화', '수', '목', '금', '토', '일'];
 const zones: Record<string, string> = { 'Asia/Seoul': '한국 시간 (서울)', 'Asia/Tokyo': '일본 시간 (도쿄)',
   'America/Los_Angeles': '미국 서부 (로스앤젤레스)', 'America/New_York': '미국 동부 (뉴욕)',
@@ -40,7 +40,17 @@ const platforms: Record<string, string> = { youtube: 'YouTube', twitch: 'Twitch'
 const states: Record<string, string> = { checking: '새 영상 확인 중', selected: '가져오기 준비 중', importing: '영상 가져오는 중',
   ready: '송출 준비 중', broadcasting: '송출 중', completed: '전송 완료', skipped: '새 영상 없음', failed: '실행 실패' };
 const failures: Record<string, string> = {
-  YOUTUBE_RECONNECT_REQUIRED: 'YouTube 채널을 다시 연결해 주세요.', YOUTUBE_ACCESS_DENIED: '채널 조회 권한을 확인해 주세요.',
+  YOUTUBE_LIVE_NOT_ENABLED: '연결한 YouTube 채널의 실시간 스트리밍이 아직 활성화되지 않았습니다. YouTube Studio에서 활성화해 주세요. 최초 활성화는 최대 24시간 걸릴 수 있습니다.',
+  YOUTUBE_RECONNECT_REQUIRED: 'YouTube 채널을 다시 연결해 주세요.', YOUTUBE_ACCESS_DENIED: 'YouTube 채널과 방송 관리 권한을 확인해 주세요.',
+  YOUTUBE_LIVE_PERMISSION_REQUIRED: 'YouTube 방송 관리 권한을 연결한 뒤 일정을 다시 시작해 주세요.',
+  YOUTUBE_STREAM_KEY_MISMATCH: '연결한 YouTube 채널과 저장한 스트림 키가 일치하지 않습니다.',
+  YOUTUBE_STREAM_IN_USE: 'YouTube에서 이미 사용 중인 스트림입니다.',
+  YOUTUBE_CREATE_UNCONFIRMED: '방송 생성 결과가 불확실해 일정을 멈췄습니다. YouTube Studio를 확인해 주세요.',
+  YOUTUBE_LIVE_NOT_STARTED: '영상은 전송했지만 YouTube 방송 시작이 확인되지 않았습니다.',
+  YOUTUBE_FINALIZATION_UNCONFIRMED: 'YouTube 방송 종료를 확인하지 못했습니다. Studio를 확인해 주세요.',
+  YOUTUBE_BROADCAST_MISSING: '연결한 채널에서 방송을 찾지 못했습니다.',
+  YOUTUBE_BROADCAST_REVOKED: 'YouTube에서 방송을 취소했습니다.',
+  YOUTUBE_CHANNEL_CHANGED: '방송 중 연결한 YouTube 채널이 변경되었습니다.',
   YOUTUBE_UNAVAILABLE: 'YouTube에 연결하지 못했습니다.', CONNECTION_REQUIRED: '플랫폼 연결 정보를 다시 저장해 주세요.',
   STORAGE_OR_JOB_QUOTA: '보관함 여유 공간과 진행 중인 방송을 확인해 주세요.',
   BROADCAST_FAILED: '방송 이력에서 실패한 플랫폼을 확인해 주세요.', IMPORT_FAILED: '원본 영상을 가져오지 못했습니다.',
@@ -50,6 +60,8 @@ export default function AutomationPanel({ media, platformChoices, onBack, onPrep
   media: Media[]; platformChoices: StreamTarget[]; onBack: () => void; onPrepareMedia: () => void;
 }) {
   const [data, setData] = useState<Data | null>(null);
+  const [youtubePrivacy, setYoutubePrivacy] = useState('unlisted');
+  const [youtubeKids, setYoutubeKids] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [addingPlatform, setAddingPlatform] = useState(false);
   const [savingPlatform, setSavingPlatform] = useState(false);
@@ -129,12 +141,12 @@ export default function AutomationPanel({ media, platformChoices, onBack, onPrep
     catch (e) { if (alive.current) setError(e instanceof Error ? e.message : '요청을 처리하지 못했습니다.'); }
     finally { if (alive.current) setBusy(false); }
   }
-  function connect() {
+  function connect(live = false) {
     popup.current = window.open('about:blank', 'replay-youtube-channel', 'width=520,height=720');
     if (!popup.current) { setError('브라우저 팝업을 허용한 뒤 다시 연결해 주세요.'); return; }
     void action(async () => {
       try {
-        const result = await api<{ url: string }>('/youtube-channel/connect', { method: 'POST' });
+        const result = await api<{ url: string }>(`/youtube-channel/connect${live ? '?live=true' : ''}`, { method: 'POST' });
         if (popup.current && alive.current) popup.current.location.href = result.url;
       } catch (e) { popup.current?.close(); throw e; }
     });
@@ -142,6 +154,7 @@ export default function AutomationPanel({ media, platformChoices, onBack, onPrep
   const ready = media.filter(item => item.status === 'ready');
   const toggle = <T,>(values: T[], value: T) => values.includes(value) ? values.filter(item => item !== value) : [...values, value];
   const unavailable = !targets.length ? '송출할 플랫폼을 선택해 주세요.' : !weekdays.length ? '반복할 요일을 선택해 주세요.'
+    : targets.includes('youtube') && !data?.youtube?.live_authorized ? 'YouTube 방송 관리 권한을 연결해 주세요.'
     : source === 'media' ? (!ready.some(item => item.id === mediaId) ? '보관함에서 영상을 선택해 주세요.' : '')
       : !data?.youtube?.connected ? '먼저 내 YouTube 채널을 연결해 주세요.' : '';
   const activeCount = data?.items.filter(item => item.enabled).length || 0;
@@ -168,7 +181,7 @@ export default function AutomationPanel({ media, platformChoices, onBack, onPrep
           </Popover></div>
         {creating && <form className="automation-form" onSubmit={event => { event.preventDefault(); void action(async () => {
           await api('/automations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, source, media_id: mediaId,
-            targets, weekdays, time, timezone: zone }) });
+            targets, weekdays, time, timezone: zone, youtube_privacy: youtubePrivacy, youtube_made_for_kids: youtubeKids }) });
           if (alive.current) { setCreating(false); setName(''); setNotice('자동 송출 일정을 저장했습니다.'); }
         }); }}>
           <label className="automation-name">일정 이름<input ref={nameInput} required disabled={busy} maxLength={180} value={name} onChange={event => setName(event.target.value)} placeholder="예: 평일 저녁 신제품 소개" /></label>
@@ -188,7 +201,7 @@ export default function AutomationPanel({ media, platformChoices, onBack, onPrep
               </fieldset>
                 : <div className="automation-channel"><div><strong>{data.youtube?.channel?.title || '내 YouTube 채널'}</strong><p>새 공개 영상이 있을 때만 송출해요.</p></div>
                   {data.youtube?.connected ? <div className="automation-channel-actions"><span className="automation-status"><Check size={14} aria-hidden="true" />연결됨</span><Button className="automation-button automation-secondary" variant="ghost" type="button" disabled={busy} onClick={() => void action(() => api('/youtube-channel', { method: 'DELETE' }))}>연결 해제</Button></div>
-                    : data.youtube?.configured ? <Button className="automation-button" type="button" variant="outline" disabled={busy} onClick={connect}><Video size={17} />YouTube 채널 연결</Button>
+                    : data.youtube?.configured ? <Button className="automation-button" type="button" variant="outline" disabled={busy} onClick={() => connect()}><Video size={17} />YouTube 채널 연결</Button>
                       : <p className="automation-channel-unavailable">채널 연결을 준비하고 있어요. 지금은 보관함 영상으로 예약할 수 있어요.</p>}
                 </div>}
             </section>
@@ -215,6 +228,15 @@ export default function AutomationPanel({ media, platformChoices, onBack, onPrep
                   })}</div>
                 </> : <div className="automation-setup"><p id="automation-platform-hint">방송할 채널을 먼저 연결해 주세요.<br />한 번 연결하면 다음 예약에도 사용할 수 있어요.</p></div>}
               </fieldset>
+              {targets.includes('youtube') && <div className="automation-youtube-settings">
+                <div className="automation-channel"><div><strong>YouTube 자동 방송</strong><p>{data.youtube?.live_authorized ? `${data.youtube.channel?.title || '연결한 채널'}에 방송을 만들고 시작·종료해요.` : '스트림 키와 같은 채널로 방송 관리 권한을 연결해 주세요.'}</p></div>
+                  {data.youtube?.live_authorized ? <span className="automation-status"><Check size={14} />방송 관리 연결됨</span>
+                    : data.youtube?.configured ? <Button className="automation-button" type="button" disabled={busy} onClick={() => connect(true)}>YouTube 방송 권한 연결</Button>
+                      : <output>YouTube 방송 권한 연결 설정이 필요합니다. 지금은 YouTube 자동 송출을 시작할 수 없어요.</output>}
+                </div>
+                <label>방송 공개 범위<select aria-label="YouTube 방송 공개 범위" value={youtubePrivacy} disabled={busy} onChange={event => setYoutubePrivacy(event.target.value)}><option value="unlisted">일부 공개 — 링크가 있는 사람</option><option value="private">비공개 — 나만 보기</option><option value="public">공개 — 누구나 시청</option></select></label>
+                <label className="automation-youtube-kids"><input type="checkbox" checked={youtubeKids} disabled={busy} onChange={event => setYoutubeKids(event.target.checked)} />아동용으로 제작된 영상입니다</label>
+              </div>}
             </section>
           </div>
           <div className="automation-actions"><p id="automation-submit-hint">{unavailable || `${repeatLabel(weekdays)} ${time}, 선택한 플랫폼으로 자동 송출해요.`}</p><div><Button className="automation-button automation-secondary" type="button" variant="ghost" disabled={busy} onClick={() => { setCreating(false); heading.current?.focus(); }}>취소</Button><Button className="automation-button automation-primary" type="submit" aria-describedby="automation-submit-hint" disabled={busy || !!unavailable}><CalendarClock size={17} />{busy ? '저장 중…' : '자동 송출 시작'}</Button></div></div>
@@ -225,7 +247,7 @@ export default function AutomationPanel({ media, platformChoices, onBack, onPrep
           <div className="automation-rule-main"><div className="automation-rule-title"><h3>{item.name}</h3><span className={`automation-status ${!item.enabled && !item.active ? 'paused' : ''}`}>{item.active ? '진행 중' : item.enabled ? '예약 중' : '일시중지'}</span></div>
             <p>{item.targets.map(target => platforms[target] || target).join(', ')}<span className="automation-separator" aria-hidden="true" />{item.source === 'youtube_latest' ? '내 채널의 새 영상' : '보관함 영상 반복'}</p>
             <p className="automation-next">{item.active ? '이번 방송이 끝나면 다음 일정을 준비해요.' : item.enabled ? `다음 방송 ${dateLabel(item.next_run, item.timezone)}` : '다시 시작하면 다음 예약부터 방송해요.'}<span className="automation-zone">{zones[item.timezone] || item.timezone}</span></p>
-            {!!item.history.length && <details className="automation-history"><summary><span>최근 결과: {states[item.history[0].state] || item.history[0].state}</span><ChevronDown size={16} aria-hidden="true" /></summary><ol>{item.history.map(run => <li key={run.id}><div><time>{dateLabel(run.scheduled_for, item.timezone)}</time><strong>{states[run.state] || run.state}</strong></div>{run.state === 'failed' && <p className="automation-error">{failures[run.error_code || ''] || '영상을 가져오거나 송출하지 못했습니다. 보관함과 방송 이력을 확인해 주세요.'}</p>}</li>)}</ol></details>}
+            {!!item.history.length && <details className="automation-history"><summary><span>최근 결과: {item.history[0].state === 'completed' && item.history[0].youtube?.live_confirmed ? 'YouTube 방송 종료 확인' : states[item.history[0].state] || item.history[0].state}</span><ChevronDown size={16} aria-hidden="true" /></summary><ol>{item.history.map(run => <li key={run.id}><div><time>{dateLabel(run.scheduled_for, item.timezone)}</time><strong>{run.state === 'completed' && run.youtube?.live_confirmed ? 'YouTube 방송 종료 확인' : states[run.state] || run.state}</strong></div>{run.youtube?.watch_url && /^https:\/\/www\.youtube\.com\/watch\?v=[A-Za-z0-9_-]{11}$/.test(run.youtube.watch_url) && <a href={run.youtube.watch_url} target="_blank" rel="noopener noreferrer">YouTube에서 방송 보기</a>}{run.error_code === 'YOUTUBE_LIVE_NOT_ENABLED' && <a href="https://studio.youtube.com/" target="_blank" rel="noopener noreferrer">YouTube Studio에서 라이브 활성화</a>}{run.state === 'failed' && <p className="automation-error">{failures[run.error_code || ''] || '영상을 가져오거나 송출하지 못했습니다. 보관함과 방송 이력을 확인해 주세요.'}</p>}</li>)}</ol></details>}
           </div><div className="automation-rule-actions"><Button className="automation-button" variant="outline" disabled={busy} aria-label={`${item.name} ${item.enabled ? '일시중지' : '다시 시작'}`} onClick={() => void action(() => api(`/automations/${item.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !item.enabled }) }))}>{item.enabled ? <Pause size={15} /> : <Play size={15} />}{item.enabled ? '일시중지' : '다시 시작'}</Button>
             <Button className="automation-button automation-delete" variant="ghost" type="button" disabled={busy || item.active} aria-label={`${item.name} 삭제`} onClick={() => void action(() => api(`/automations/${item.id}`, { method: 'DELETE' }))}><Trash2 size={16} />삭제</Button></div>
         </article>)}</div>

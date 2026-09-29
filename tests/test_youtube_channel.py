@@ -77,7 +77,17 @@ def test_latest_filters_private_live_and_other_channels(channel):
     service.http = httpx.Client(transport=httpx.MockTransport(transport))
     service.finish(params['state'][0], 'code')
     assert service.latest(USER)['id'] == '2'*11
+    from server.youtube_live import broadcasts
+    from sqlalchemy import insert
+    with repo._transaction() as connection:
+        connection.execute(insert(broadcasts).values(run_id='a'*32, tenant_id='alpha', subject_hash='x'*64,
+            channel_id=CHANNEL_ID, stream_id='stream', broadcast_id='2'*11, phase='complete',
+            live_seen=True, created=0, updated=0))
+    assert service.latest(USER)['id'] == '1'*11  # never use our own public replay archive
     service.disconnect(USER)
+    from server.youtube_channel import grants
+    with repo.engine.connect() as connection:
+        assert not connection.execute(select(grants)).all()
     with pytest.raises(ChannelError, match='YOUTUBE_RECONNECT_REQUIRED'):
         service.latest(USER)
 
@@ -93,3 +103,14 @@ def test_expiry_and_oauth_denied_fail_without_token_leak(channel):
     with pytest.raises(ChannelError, match='YOUTUBE_RECONNECT_REQUIRED') as error:
         service.request('POST', 'https://oauth2.googleapis.com/token')
     assert 'sensitive-provider-message' not in str(error)
+
+
+def test_live_not_enabled_is_actionable_without_provider_message(channel):
+    service, repo = channel
+    service.http = httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(403,
+        json={'error': {'message': 'private provider detail', 'errors': [{'reason': 'liveStreamingNotEnabled'}]}})))
+    with pytest.raises(ChannelError, match='^YOUTUBE_LIVE_NOT_ENABLED$'):
+        service.request('GET', 'https://www.googleapis.com/youtube/v3/liveStreams')
+    service.http = httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(403, json={'error': None})))
+    with pytest.raises(ChannelError, match='^YOUTUBE_ACCESS_DENIED$'):
+        service.request('GET', 'https://www.googleapis.com/youtube/v3/liveStreams')

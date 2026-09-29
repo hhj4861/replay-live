@@ -20,11 +20,15 @@ def enabled(monkeypatch):
 
 
 @pytest.fixture
-def automatic(enabled, commercial, clip):
+def automatic(enabled, commercial, clip, monkeypatch):
     client, repo, objects = commercial
     app = client.app
     service = app.state.automations
     service.migrate()
+    # General scheduler tests stub only the external YouTube lifecycle.
+    monkeypatch.setattr(service.channel, 'status', lambda _: {'connected': True, 'live_authorized': True})
+    monkeypatch.setattr(service.live, 'prepare', lambda *args, **kwargs: 'https://www.youtube.com/watch?v=aaaaaaaaaaa')
+    monkeypatch.setattr(service.live, 'observe', lambda *args, **kwargs: True)
     app.state.stream_connections.migrate()
     user = Principal('alpha', 'alpha', ('operator',))
     app.state.stream_connections.save(user, 'youtube', server_url='', stream_key='synthetic-test-key')
@@ -46,7 +50,7 @@ def advance(service, now, count=1):
 def create_due(automatic, *, youtube=False, monkeypatch=None):
     client, service, user, now, payload = automatic
     if youtube:
-        monkeypatch.setattr(service.channel, 'status', lambda _: {'connected': True})
+        monkeypatch.setattr(service.channel, 'status', lambda _: {'connected': True, 'live_authorized': True})
         monkeypatch.setattr(service.channel, 'latest', lambda _: {'id': 'GcOe4ILS6Ow'})
         payload = {**payload, 'source': 'youtube_latest', 'media_id': None}
     response = client.post('/api/automations', json=payload)
@@ -217,6 +221,7 @@ def test_postgres_two_coordinators_only_claim_one_durable_run(postgres, tmp_path
     channel = YouTubeChannel(repo, keys, 'http://testserver/api/youtube-channel/callback')
     try:
         service = Automations(repo, keys, connections, channel, objects, cfg)
+        channel.status = lambda _: {'connected': True, 'live_authorized': True}
         source = repo.add_media(user.tenant_id, name='source.mp4', object_key=objects.key(user.tenant_id, 'source'),
                                 bytes=1000, duration=10, width=640, height=360, fps=30, status='ready')
         rule = service.create(user, {'name': 'concurrency', 'source': 'media', 'media_id': source['id'],
@@ -230,3 +235,45 @@ def test_postgres_two_coordinators_only_claim_one_durable_run(postgres, tmp_path
             assert len(connection.execute(select(runs).where(runs.c.schedule_id == rule['id'])).all()) == 1
     finally:
         channel.http.close()
+
+
+def test_youtube_requires_live_grant_before_admission(automatic, monkeypatch):
+    client, service, user, now, payload = automatic
+    monkeypatch.setattr(service.channel, 'status', lambda _: {'connected': True, 'live_authorized': False})
+    response = client.post('/api/automations', json=payload)
+    assert response.status_code == 400
+    assert response.json()['code'] == 'YOUTUBE_LIVE_PERMISSION_REQUIRED'
+    assert service.list(user) == []
+
+
+def test_sender_completion_waits_for_youtube_and_times_out(automatic, monkeypatch):
+    client, service, user, now, payload = automatic
+    create_due(automatic)
+    advance(service, now, 2)
+    broadcast = next(j for j in service.repo.list_jobs('alpha') if j['target'] == 'youtube')
+    assert broadcast['broadcast_url'] == 'https://www.youtube.com/watch?v=aaaaaaaaaaa'
+    with service.repo._transaction() as connection:
+        connection.execute(update(jobs).where(jobs.c.id == broadcast['id']).values(state='completed', updated=now[0]))
+    monkeypatch.setattr(service.live, 'observe', lambda *args, **kwargs: False)
+    advance(service, now)
+    assert service.list(user)[0]['history'][0]['state'] == 'broadcasting'
+    now[0] += 181
+    advance(service, now)
+    result = service.list(user)[0]
+    assert result['history'][0]['state'] == 'failed'
+    assert result['history'][0]['error_code'] == 'YOUTUBE_FINALIZATION_UNCONFIRMED'
+    assert result['enabled'] is False
+
+
+def test_youtube_failure_stops_admitted_jobs_and_pauses(automatic, monkeypatch):
+    from server.youtube_channel import ChannelError
+    client, service, user, now, payload = automatic
+    create_due(automatic)
+    advance(service, now, 2)
+    def denied(*args, **kwargs): raise ChannelError('YOUTUBE_ACCESS_DENIED')
+    monkeypatch.setattr(service.live, 'observe', denied)
+    advance(service, now)
+    result = service.list(user)[0]
+    assert result['history'][0]['error_code'] == 'YOUTUBE_ACCESS_DENIED'
+    assert not result['enabled']
+    assert next(j for j in service.repo.list_jobs('alpha') if j['target'] == 'youtube')['state'] == 'stopped'

@@ -171,3 +171,8 @@
 .automation-media-indicator { display: grid; place-items: center; flex-shrink: 0; width: 20px; height: 20px; border: 1px solid #aab6c9; border-radius: 50%; }
 .automation-media-option:has(input:checked) .automation-media-indicator { color: #fff; background: #3458d4; border-color: #3458d4; }
 .automation-media-library:disabled label { opacity: .5; cursor: not-allowed; }
+.automation-youtube-settings { display: grid; gap: 16px; margin-top: 20px; }
+.automation-youtube-settings>label { display: grid; gap: 8px; font-size: 14px; font-weight: 600; }
+.automation-youtube-settings>.automation-youtube-kids { display: flex; align-items: center; gap: 8px; font-weight: 400; }
+.automation-youtube-kids input { width: 18px; height: 18px; accent-color: #3458d4; }
+.automation-history a { display: inline-flex; align-items: center; min-height: 44px; color: #3458d4; text-decoration: underline; }

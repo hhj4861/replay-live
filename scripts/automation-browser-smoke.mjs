@@ -147,6 +147,12 @@ try {
   await youtubeCard.getByText('선택하기', { exact: true }).waitFor();
   await youtubeCard.click();
   assert.equal(await youtubeChoice.isChecked(), true);
+  assert.equal(await panel.getByRole('button', { name: '자동 송출 시작', exact: true }).isDisabled(), true);
+  await panel.getByText('YouTube 자동 방송', { exact: true }).waitFor();
+  report.checks.push('YouTube requires broadcast permission even with a saved stream key');
+  await capture('youtube-permission');
+  await youtubeChoice.uncheck();
+  await twitchChoice.check();
   report.checks.push('saved platform uses shared brand card and supports keyboard and whole-card selection');
   await panel.getByLabel('송출 시간', { exact: true }).fill('18:00');
   await panel.getByLabel('시간대', { exact: true }).selectOption({ label: '한국 시간 (서울)' });
@@ -159,7 +165,7 @@ try {
   await panel.getByRole('heading', { name: '매주 신제품 E2E', exact: true }).waitFor();
   const stored = await request('/automations');
   const rule = stored.items.find(item => item.name === '매주 신제품 E2E');
-  assert.deepEqual(rule.targets, ['youtube']);
+  assert.deepEqual(rule.targets, ['twitch']);
   assert.equal(rule.media_id, ready.id);
   assert.equal(rule.timezone, 'Asia/Seoul');
   ruleId = rule.id;
@@ -195,7 +201,7 @@ try {
   await panel.getByRole('button', { name: '일정 만들기', exact: true }).click();
   await panel.getByLabel('일정 이름', { exact: true }).fill('예약 실행 E2E');
   await panel.getByRole('radio', { name: ready.name, exact: true }).check();
-  await panel.getByRole('checkbox', { name: 'YouTube', exact: true }).check();
+  await panel.getByRole('checkbox', { name: 'Twitch', exact: true }).check();
   const due = new Date(Date.now() + 120000);
   await panel.getByLabel('송출 시간', { exact: true }).fill(due.toISOString().slice(11, 16));
   await panel.getByLabel('시간대', { exact: true }).selectOption('UTC');
@@ -217,7 +223,7 @@ try {
   assert.equal(executed.history.length, 1);
   assert.equal(executed.history[0].state, 'failed');
   assert.equal(executed.history[0].error_code, 'BROADCAST_FAILED');
-  const broadcasts = (await request('/broadcasts')).filter(item => item.media_id === ready.id && item.target === 'youtube');
+  const broadcasts = (await request('/broadcasts')).filter(item => item.media_id === ready.id && item.target === 'twitch');
   assert.equal(broadcasts.length, 1, 'scheduler must enqueue exactly one broadcast');
   assert.equal(broadcasts[0].error_code, 'PREVIEW_EXTERNAL_OUTPUT_FORBIDDEN');
   await panel.getByText('최근 결과: 실행 실패', { exact: true }).waitFor({ timeout: 25000 });

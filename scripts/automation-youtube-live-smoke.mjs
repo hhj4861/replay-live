@@ -8,8 +8,7 @@ const { chromium } = require(process.env.REPLAY_PLAYWRIGHT_MODULE || 'playwright
 assert.equal(process.env.REPLAY_ALLOW_YOUTUBE_LIVE, '1', 'Explicit live-test opt-in required');
 const web = 'http://127.0.0.1:13102';
 const api = 'http://127.0.0.1:18092';
-const watchUrl = process.env.REPLAY_TEST_WATCH_URL;
-assert.ok(!watchUrl || /^https:\/\/(www\.)?youtube\.com\/watch\?v=[\w-]{11}$/.test(watchUrl || ''), 'Set the test YouTube watch URL');
+let watchUrl;
 const evidencePath = process.env.REPLAY_LIVE_EVIDENCE || '/private/tmp/replay-auto-live-evidence.json';
 const report = {started_at: new Date().toISOString(), headless: true, production_deployed: false,
   source: 'synthetic test pattern with 880Hz tone, 60 seconds', watch_url: watchUrl, viewer_samples: []};
@@ -35,7 +34,9 @@ try {
   await page.goto(web);
   await page.getByRole('button',{name:'개발용 미리보기로 접속',exact:true}).click();
   await page.locator('.connection').filter({hasText:'스튜디오 연결됨'}).waitFor({timeout:30000});
-  const existingRules = (await request('/automations')).items;
+  const automationStatus = await request('/automations');
+  assert.ok(automationStatus.youtube?.configured && automationStatus.youtube?.live_authorized, 'Connect YouTube broadcast management permission before testing');
+  const existingRules = automationStatus.items;
   assert.ok(existingRules.every(item => !item.enabled && !item.active), 'Pause existing schedules before the live test');
   const jobs = await request('/broadcasts');
   assert.ok(jobs.every(item => ['completed','failed','stopped'].includes(item.state)), 'Another broadcast is active');
@@ -77,7 +78,7 @@ try {
     if(await button.count()) await button.first().click();
   }
   const deadline=Date.now()+360000;
-  let completed=false, screenshotCount=0, lastState='';
+  let completed=false, screenshotCount=0, lastState='', lastViewerReload=0;
   while(Date.now()<deadline) {
     const current=(await request('/automations')).items.find(item=>item.id===ruleId);
     const run=current.history[0];
@@ -88,19 +89,35 @@ try {
       jobId=job.id;report.job={id:job.id,state:job.state,error_code:job.error_code,progress:job.progress};
       if(job.state!==lastState){console.log(JSON.stringify({event:'job_state',...report.job}));lastState=job.state;}
     }
-    if(run) report.automation_run={id:run.id,state:run.state,error_code:run.error_code};
-    const sample=watchUrl ? await viewer.evaluate(async()=>{
+    if(run) report.automation_run={id:run.id,state:run.state,error_code:run.error_code,youtube:run.youtube};
+    if (!watchUrl && run?.youtube?.watch_url && run.youtube.live_confirmed) {
+      watchUrl = run.youtube.watch_url;
+      assert.match(watchUrl, /^https:\/\/www\.youtube\.com\/watch\?v=[\w-]{11}$/);
+      report.watch_url = watchUrl;
+      await viewer.goto(watchUrl,{waitUntil:'domcontentloaded',timeout:30000});
+      for(const label of ['Reject all','모두 거부']) {
+        const button=viewer.getByRole('button',{name:label,exact:true});
+        if(await button.count()) await button.first().click();
+      }
+    }
+    const sample=watchUrl ? await Promise.race([viewer.evaluate(()=>{
       const video=document.querySelector('video');
       const player=document.getElementById('movie_player');
       const response=player?.getPlayerResponse?.();
-      if(video){video.muted=true;try{await video.play();}catch{}}
+      if(video){video.muted=true;void video.play().catch(()=>{});}
       return {at:new Date().toISOString(),time:video?.currentTime||0,width:video?.videoWidth||0,height:video?.videoHeight||0,
         paused:video?.paused??true,ready:video?.readyState||0,frames:video?.getVideoPlaybackQuality?.().totalVideoFrames||0,
         player_state:player?.getPlayerState?.(),playability:response?.playabilityStatus?.status,
         video_id:response?.videoDetails?.videoId,is_live:response?.videoDetails?.isLive,
         live_content:response?.videoDetails?.isLiveContent};
-    }).catch(()=>({at:new Date().toISOString(),unavailable:true})) : {at:new Date().toISOString(),watch_url_missing:true};
+    }).catch(()=>({at:new Date().toISOString(),unavailable:true})), new Promise(resolve=>setTimeout(()=>resolve({at:new Date().toISOString(),unavailable:true,reason:'viewer_timeout'}),5000))]) : {at:new Date().toISOString(),watch_url_missing:true};
+    sample.platform_state = run?.youtube?.state;
     report.viewer_samples.push(sample);
+    // An upcoming page may retain LIVE_STREAM_OFFLINE after the platform starts.
+    if (watchUrl && run?.youtube?.state === 'live' && sample.playability === 'LIVE_STREAM_OFFLINE' && Date.now()-lastViewerReload>10000) {
+      lastViewerReload=Date.now();
+      await viewer.reload({waitUntil:'domcontentloaded',timeout:20000});
+    }
     if(sample.width>0 && !sample.paused && screenshotCount<3){
       await viewer.screenshot({path:`/private/tmp/replay-auto-live-viewer-${++screenshotCount}.png`});
     }
@@ -108,16 +125,17 @@ try {
     if(run?.state==='failed'||job?.state==='failed') throw new Error('Broadcast failed: '+(job?.error_code||run?.error_code));
     if(run?.state==='completed'){
       completed=true;
-      if (!watchUrl) break;
+      assert.ok(run.youtube?.live_confirmed && run.youtube?.state === 'complete', 'YouTube must confirm actual start and completion');
+      assert.ok(watchUrl, 'Managed broadcast watch URL missing');
       const expectedVideoId = new URL(watchUrl).searchParams.get('v');
-      const playing=report.viewer_samples.filter(s=>s.width>0&&!s.paused&&s.frames>0&&s.video_id===expectedVideoId&&s.is_live===true);
+      const playing=report.viewer_samples.filter(s=>s.width>0&&!s.paused&&s.frames>0&&s.video_id===expectedVideoId&&(s.is_live===true||s.platform_state==='live'));
       if(playing.length>=2 && playing.at(-1).frames>playing[0].frames){report.viewer_playback_observed=true;break;}
     }
     await new Promise(resolve=>setTimeout(resolve,4000));
   }
   assert.ok(completed,'Automation did not complete before deadline');
   report.sender_completed=true;
-  if (watchUrl) assert.ok(report.viewer_playback_observed,'No evidence of moving YouTube playback');
+  assert.ok(report.viewer_playback_observed,'No evidence of moving YouTube playback');
   await page.reload();
   await page.getByRole('region',{name:'자동 송출',exact:true}).waitFor();
   await page.screenshot({path:'/private/tmp/replay-auto-live-automation.png',fullPage:true});
