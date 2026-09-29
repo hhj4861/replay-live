@@ -145,6 +145,13 @@ def cancel_preview_jobs(repo):
         repo.cancel(tenant_id, job_id)
 
 
+def preview_settings(scratch, api, web):
+    return Settings(mode='development', database_url='sqlite:///' + str(scratch / 'preview.sqlite3'),
+        public_url=api, origins=(web,), control_token=secrets.token_urlsafe(32), callback_key=secrets.token_urlsafe(32),
+        version='local-preview', max_duration=0, max_upload_bytes=0, max_storage_bytes=256 * 1024**2,
+        local_root=str(scratch))
+
+
 def preview_build_files(scratch, api, *, google=False, platform_live=False):
     """Keep Google auth intact; use an exact auth override only in development."""
     config = scratch / 'preview.vite.config.mjs'
@@ -268,6 +275,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--api-port', type=int, default=18090, help='Unused loopback API port (default: 18090)')
     parser.add_argument('--web-port', type=int, default=13100, help='Unused loopback web port (default: 13100)')
+    parser.add_argument('--automations', action='store_true', help='Enable local recurring broadcast preview')
     parser.add_argument('--google', action='store_true', help='Use real Google login; requires a web client ID and account policy')
     parser.add_argument('--google-env-file', help='Optional file with the public Google client ID and server-only account policies listed in .env.google.example; requires --google')
     args = parser.parse_args()
@@ -285,10 +293,7 @@ def main():
         require_free_ports((args.api_port, args.web_port))
         scratch_dir = tempfile.TemporaryDirectory(prefix='replay-local-preview-')
         scratch = Path(scratch_dir.name)
-        cfg = Settings(mode='development', database_url='sqlite:///' + str(scratch / 'preview.sqlite3'),
-            public_url=api, origins=(web,), control_token=secrets.token_urlsafe(32), callback_key=secrets.token_urlsafe(32),
-            version='local-preview', validation_timeout=45, max_duration=120, max_storage_bytes=20 * 1024**2,
-            local_root=str(scratch))
+        cfg = preview_settings(scratch, api, web)
         repo = Repository(cfg.database_url, create_schema=True, max_storage_bytes=cfg.max_storage_bytes,
                           max_output_bytes=cfg.max_output_bytes, validation_duration=cfg.validation_timeout,
                           tenant_concurrency=cfg.tenant_concurrency, global_concurrency=cfg.global_concurrency)
@@ -296,10 +301,14 @@ def main():
         objects = LocalStorage(scratch / 'objects', signing_key=cfg.callback_key, base_url=api, allow_development=True)
         keys = LocalKeyringProvider({'preview': Fernet.generate_key()}, 'preview', mode='development')
         auth = preview_authenticator(repo, google_config)
+        if args.automations:
+            os.environ['REPLAY_AUTOMATIONS_ENABLED'] = '1'
         app = create_production_app(cfg, repository=repo, storage=objects, keys=keys, authenticator=auth)
         app.state.access_policy.migrate()
         app.state.operations.migrate()
         app.state.stream_connections.migrate()
+        if args.automations:
+            app.state.automations.migrate()
         logging.getLogger('replay').setLevel(logging.CRITICAL)
         logging.getLogger('replay.requests').disabled = True
 
@@ -340,6 +349,9 @@ def main():
             with httpx.Client(timeout=10, trust_env=False) as client:
                 while not stopping.is_set():
                     try:
+                        if args.automations:
+                            client.post(api + '/internal/automations/tick',
+                                        headers={'Authorization': 'Bearer ' + cfg.control_token}).raise_for_status()
                         response = client.post(api + '/internal/claim', headers={'Authorization': 'Bearer ' + cfg.control_token},
                                                json={'worker_id': 'local-preview', 'version': cfg.version})
                         response.raise_for_status()
