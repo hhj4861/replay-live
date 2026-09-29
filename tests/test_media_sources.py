@@ -592,6 +592,48 @@ def test_platform_short_preview_cannot_replace_full_recording(monkeypatch, tmp_p
     assert not list(tmp_path.iterdir())
 
 
+@pytest.mark.parametrize(('actual', 'rounded', 'accepted'), [
+    (16.533, True, True), (16.579048, True, True),
+    (16.0, True, True), (15.99, True, False),
+    (16.533, False, False), (1.0, True, False),
+])
+def test_youtube_whole_second_rounding_keeps_completeness_boundary(actual, rounded, accepted):
+    if accepted:
+        sources._require_complete(actual, 17, rounded_seconds=rounded)
+    else:
+        with pytest.raises(sources.SourceImportError, match='SOURCE_INCOMPLETE'):
+            sources._require_complete(actual, 17, rounded_seconds=rounded)
+
+
+@pytest.mark.parametrize(('metadata_duration', 'manifest_duration', 'accepted'), [
+    (2, None, True), (2.0, None, True),
+    (1.6, None, False), (3, None, False),
+    (2, 1.6, False), (2, 1.0, True),
+])
+def test_youtube_rounded_metadata_does_not_relax_manifests(
+        monkeypatch, tmp_path, sample_mp4, metadata_duration, manifest_duration, accepted):
+    fmt = {'url': 'https://media.example.com/video.mp4', 'ext': 'mp4',
+           'vcodec': 'avc1', 'acodec': 'mp4a'}
+    responses = [Response(sample_mp4)]
+    if manifest_duration is not None:
+        fmt.update(url='https://media.example.com/list.m3u8', protocol='m3u8_native')
+        responses.insert(0, Response(f'#EXTM3U\n#EXTINF:{manifest_duration},\nsegment.mp4\n#EXT-X-ENDLIST'.encode()))
+    network(monkeypatch, responses)
+    monkeypatch.setattr(sources, '_extract', lambda *a: {'duration': metadata_duration, 'formats': [fmt]})
+    output = tmp_path / 'output.mp4'
+
+    def download():
+        return sources.download_source({'provider': 'youtube', 'url': 'https://youtu.be/BaW_jenozKc'}, output,
+            max_bytes=1024 * 1024, max_duration=20, timeout=30, check_active=lambda: None)
+
+    if accepted:
+        assert download()['bytes'] == output.stat().st_size > 0
+    else:
+        with pytest.raises(sources.SourceImportError, match='SOURCE_INCOMPLETE'):
+            download()
+        assert not list(tmp_path.iterdir())
+
+
 def test_hls_declared_duration_cannot_hide_missing_media(monkeypatch, tmp_path, sample_mp4):
     manifest = b'#EXTM3U\n#EXTINF:15,\nsegment.mp4\n#EXT-X-ENDLIST'
     network(monkeypatch, [Response(manifest), Response(sample_mp4)])

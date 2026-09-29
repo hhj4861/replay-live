@@ -865,17 +865,19 @@ def _probe(path, budget, max_duration):
         raise SourceImportError('SOURCE_FORMAT_UNSUPPORTED') from None
 
 
-def _require_complete(actual, expected):
-    # Platforms/manifests round timestamps, but a short preview or missing final
-    # segment must not silently replace the selected recording. Never allow more
-    # than two seconds of rounding, and only 250 ms for short recordings.
-    if expected is not None and actual + max(.25, min(2.0, expected * .01)) < expected:
+def _require_complete(actual, expected, *, rounded_seconds=False):
+    # YouTube's whole-second metadata can round a complete 16.533s Short to 17s.
+    # Only that metadata gets a one-second allowance; manifests and remux checks
+    # keep the stricter tolerance so missing segments are still rejected.
+    tolerance = max(1.0 if rounded_seconds else .25, min(2.0, (expected or 0) * .01))
+    if expected is not None and actual + tolerance < expected:
         logging.getLogger(__name__).info(json.dumps({'event': 'source_incomplete',
             'reason': 'duration_short', 'actual_seconds': actual, 'expected_seconds': expected}))
         raise SourceImportError('SOURCE_INCOMPLETE')
 
 
-def _make_mp4(paths, output, budget, max_duration, *, expected_duration=None, transcode=False):
+def _make_mp4(paths, output, budget, max_duration, *, expected_duration=None,
+              rounded_duration=None, transcode=False):
     infos = [_probe(path, budget, max_duration) for path in paths]
     videos = [s for s in infos[0]['streams'] if s.get('codec_type') == 'video']
     audios = [s for s in infos[-1]['streams'] if s.get('codec_type') == 'audio']
@@ -886,6 +888,7 @@ def _make_mp4(paths, output, budget, max_duration, *, expected_duration=None, tr
         raise SourceImportError('SOURCE_FORMAT_UNSUPPORTED')
     for info in infos:
         _require_complete(info['duration'], expected_duration)
+        _require_complete(info['duration'], rounded_duration, rounded_seconds=True)
     command = ['ffmpeg', '-hide_banner', '-nostdin', '-loglevel', 'error', '-xerror', '-threads', '2']
     for path in paths:
         command.extend(_local_input(path))
@@ -909,6 +912,7 @@ def _make_mp4(paths, output, budget, max_duration, *, expected_duration=None, tr
     result = _probe(output, budget, max_duration)
     _require_complete(result['duration'], max(info['duration'] for info in infos))
     _require_complete(result['duration'], expected_duration)
+    _require_complete(result['duration'], rounded_duration, rounded_seconds=True)
 
 
 def download_source(source, output: Path, *, max_bytes: int, max_duration: float,
@@ -940,6 +944,7 @@ def download_source(source, output: Path, *, max_bytes: int, max_duration: float
     try:
         budget.check()
         with tempfile.TemporaryDirectory(prefix='source-', dir=output.parent) as directory:
+            rounded_duration = None
             if normalized['provider'] == 'direct':
                 formats = [{'url': normalized['url'], 'protocol': 'https'}]
                 expected_duration = None
@@ -953,6 +958,9 @@ def download_source(source, output: Path, *, max_bytes: int, max_duration: float
                     source_title = ' '.join(title.split())[:180].strip() or None
                 formats = _select_formats(info, transcode=use_proxy)
                 expected_duration = float(info['duration']) if info.get('duration') is not None else None
+                if (normalized['provider'] == 'youtube' and expected_duration is not None
+                        and expected_duration.is_integer()):
+                    rounded_duration, expected_duration = expected_duration, None
             finish_stage()
             stage, stage_started = 'download', time.monotonic()
             paths = []
@@ -964,7 +972,8 @@ def download_source(source, output: Path, *, max_bytes: int, max_duration: float
                 paths.append(path)
             finish_stage()
             stage, stage_started = 'prepare_mp4', time.monotonic()
-            _make_mp4(paths, output, budget, max_duration, expected_duration=expected_duration, transcode=use_proxy)
+            _make_mp4(paths, output, budget, max_duration, expected_duration=expected_duration,
+                      rounded_duration=rounded_duration, transcode=use_proxy)
             finish_stage()
         stage, stage_started = 'checksum', time.monotonic()
         digest = hashlib.sha256()
