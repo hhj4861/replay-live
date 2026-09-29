@@ -145,7 +145,8 @@ def smoke(sha, snapshot, version):
             web = public_json('https://' + PROJECTS['web'][1] + '/_replay-release.json?commit=' + sha)
             with urllib.request.urlopen('https://' + PROJECTS['web'][1], timeout=15) as response:
                 html = response.read(1024 * 1024).decode()
-                if (api == {'status': 'alive', 'version': version}
+                if (isinstance(api, dict) and api.get('status') == 'alive'
+                        and api.get('version') == version
                         and web == {'commit': sha, 'snapshot_id': snapshot}
                         and response.status == 200 and '/assets/' in html):
                     return
