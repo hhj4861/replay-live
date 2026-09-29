@@ -295,6 +295,8 @@ def run_job(job, *, client=None, workdir=None):
                 result.update(output_bytes=output_size, output_sha256=checksum)
         except (MediaError, StreamTargetError, SourceImportError) as exc:
             result = {'state': 'failed', 'error_code': exc.code, 'progress': lease.progress}
+            if isinstance(exc, SourceImportError) and exc.diagnostics is not None:
+                result['source_failure'] = exc.diagnostics.model_dump(exclude_none=True)
         except Exception:
             # Never emit HTTP exceptions: they contain signed URLs or authorization details.
             result = {'state': 'failed', 'error_code': 'WORKER_IO_FAILED', 'progress': lease.progress}
