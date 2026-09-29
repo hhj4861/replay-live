@@ -9,7 +9,7 @@ import { Sandbox } from '../web/node_modules/@vercel/sandbox/dist/index.js';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const remote = '/vercel/sandbox/replay';
-const files = ['requirements.lock', 'server/__init__.py', 'server/worker.py', 'server/media_runtime.py', 'server/media_sources.py', 'server/output_policy.py', 'server/stream_targets.py'];
+const files = ['requirements.lock', 'server/__init__.py', 'server/worker.py', 'server/media_runtime.py', 'server/media_sources.py', 'server/source_diagnostics.py', 'server/output_policy.py', 'server/stream_targets.py'];
 const version = process.env.REPLAY_VERSION || '';
 const ffmpegPackage = process.env.REPLAY_FFMPEG_PACKAGE_VERSION || '';
 const digest = value => createHash('sha256').update(value).digest('hex');
@@ -69,6 +69,7 @@ import hashlib,json,platform,subprocess
 from pathlib import Path
 from server.media_runtime import validate_media,stream_command,run_stream,require_verified_rtmps
 from server.output_policy import estimate_output_bytes
+import server.worker
 release=json.loads(Path('release-input.json').read_text())
 release['rtmps_tls_backend']=require_verified_rtmps()
 subprocess.run(['ffmpeg','-v','error','-y','-f','lavfi','-i','testsrc2=size=320x180:rate=30','-f','lavfi','-i','sine=frequency=440','-t','3','-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-c:a','aac','sample.mp4'],check=True)

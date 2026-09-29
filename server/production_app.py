@@ -33,6 +33,7 @@ from .output_policy import estimate_output_bytes
 from .request_boundary import BoundaryMiddleware
 from .repository import Repository, RepositoryError, NotFound, Conflict, PROCESSING_TARGETS
 from .media_sources import SourceImportError, normalize_source, source_platforms
+from .source_diagnostics import SourceFailure
 from .secrets import AWSKMSKeyProvider, LocalKeyringProvider, EnvironmentAESGCMKeyProvider
 from .blob_storage import VercelBlobStorage
 from .r2_storage import R2Storage
@@ -117,6 +118,7 @@ class Finish(Heartbeat):
     metadata: dict | None = None
     output_bytes: int | None = Field(default=None, gt=0)
     output_sha256: str | None = Field(default=None, pattern=r'^[a-f0-9]{64}$')
+    source_failure: SourceFailure | None = None
 
 
 class OutputIntent(BaseModel):
@@ -699,7 +701,9 @@ def create_production_app(settings=None, *, repository=None, storage=None, keys=
         completed = repo.finish(job_id, claims['lease_token'], state=payload.state, error_code=payload.error_code,
                            progress=payload.progress, output_key=output_key, output_bytes=payload.output_bytes or 0,
                            validation_metadata=payload.metadata)
-        event('worker_finished', job_id=job_id, tenant_id=claims['tenant_id'], version=cfg.version, state=completed['state'], code=completed.get('error_code'))
+        event('worker_finished', job_id=job_id, tenant_id=claims['tenant_id'], version=cfg.version,
+              state=completed['state'], code=completed.get('error_code'),
+              source_failure=payload.source_failure if row['target'] == 'import' and completed['state'] == 'failed' else None)
         background_tasks.add_task(notify_dispatch)
         return public_job(completed)
 
