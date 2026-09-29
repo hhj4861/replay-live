@@ -359,7 +359,10 @@ def create_production_app(settings=None, *, repository=None, storage=None, keys=
 
     @app.get('/api/live')
     def live():
-        return {'status': 'alive', 'version': cfg.version}
+        result = {'status': 'alive', 'version': cfg.version}
+        if app.state.automations_enabled:
+            result['automations_enabled'] = True
+        return result
 
     @app.get('/api/health')
     def health(user=Depends(principal)):
@@ -742,7 +745,10 @@ def create_production_app(settings=None, *, repository=None, storage=None, keys=
 
     @app.post('/internal/next-wakeup', dependencies=[Depends(control)])
     def next_wakeup():
-        return {'at': repo.next_wakeup()}
+        candidates = [repo.next_wakeup()]
+        if app.state.automations_enabled:
+            candidates.append(app.state.automations.next_wakeup())
+        return {'at': min((at for at in candidates if at is not None), default=None)}
 
     class CleanedRuntime(BaseModel):
         job_id: str = Field(pattern=r'^[a-f0-9]{32}$')

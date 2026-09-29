@@ -86,6 +86,14 @@ export async function consumeDispatchWakeup(message: unknown, dispatch: (request
     // deployment must acknowledge its chain without claiming or scheduling work.
     if ((health as { version: string }).version !== version) return;
 
+    if ((health as { automations_enabled?: boolean }).automations_enabled === true) {
+      const tick = await fetch(`${base}/internal/automations/tick`, {
+        method: 'POST', headers: { Authorization: `Bearer ${controlToken}`, 'Content-Type': 'application/json' },
+        body: '{}', cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(30000),
+      });
+      if (!tick.ok) throw unavailable();
+    }
+
     const response = await dispatch(new Request('https://internal.invalid/api/dispatch', {
       method: 'GET', headers: { Authorization: `Bearer ${cronSecret}` },
     }));

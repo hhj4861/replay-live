@@ -1,4 +1,4 @@
-# 자동 송출 — 로컬 구현
+# 자동 송출
 
 이 변경은 기능 브랜치의 로컬 구현이다. 운영 환경변수, DB, 예약 실행기와 배포는 변경하지 않는다. `REPLAY_AUTOMATIONS_ENABLED`의 기본값은 꺼짐이며, 기존 운영 DB에 새 테이블이 없어도 비활성 API 조회는 동작한다.
 
@@ -34,7 +34,7 @@ python scripts/commercial-migrate.py --development
 python scripts/automation-tick.py
 ```
 
-독립 실행기는 루프백 API만 허용하며 15초마다 `/internal/automations/tick`을 호출한다. `--once`는 단일 실행용이다. API만 켜고 tick/worker를 실행하지 않으면 일정은 처리되지 않는다. 운영 예약 트리거는 이 작업에서 연결하지 않았다.
+독립 실행기는 루프백 API만 허용하며 15초마다 `/internal/automations/tick`을 호출한다. `--once`는 단일 실행용이다. API만 켜고 tick/worker를 실행하지 않으면 일정은 처리되지 않는다. 운영 큐 연결은 구현됐으며 실제 활성화 절차는 `production-deployment.md`를 따른다.
 
 ## 내 YouTube 채널 연결 설정
 
@@ -92,6 +92,12 @@ Python 테스트는 실제 로컬 파일 업로드/FFmpeg 검사와 DB 예약·�
 - 사용자가 라이브 가능한 계정으로 다시 연결한 후 스트림 키 소유 채널 일치를 확인했다. 예약 회차가 YouTube 방송을 생성·바인딩했고 실제 시작 및 종료(`complete`, `live_confirmed=true`)와 FFmpeg 59.977초 완료를 확인했다.
 - 방송 결과: https://www.youtube.com/watch?v=AhBKbIVv-58 . 별도 headless 시청에서 녹화본의 프레임 34→654, 재생 시간 1.15→21.64초 증가를 확인했다.
 - 첫 플레이어 검증은 `video.play()`의 무기한 대기, 다음 검증은 방송 전 열린 페이지의 `LIVE_STREAM_OFFLINE` 잔류를 확인했다. 검증기는 재생 대기를 제한하고 플랫폼 시작 확인 후 시청 페이지를 열며 필요하면 새로고침한다. 녹화본 재생 증거와 실시간 재생 증거는 구분한다.
-- 운영 배포는 하지 않았다. 전역 DBQ Git 훅의 대상 DB 미지정으로 커밋이 차단되어 변경은 작업 브랜치의 로컬 index에 남아 있다. 훅은 우회하거나 변경하지 않았다.
+- 운영 배포는 하지 않았다. 당시 전역 DBQ Git 훅으로 커밋이 차단됐으나, 설치된 0.2.0-dev.6의 회사 저장소 한정 정책을 확인한 뒤 정상 훅으로 커밋·작업 브랜치 push를 완료했다. 훅을 우회하거나 이 작업에서 변경하지 않았다.
 
 최종 재검증은 2026-09-29 11:27 KST에 `sender_and_playback_verified`로 통과했다. https://www.youtube.com/watch?v=ei19Qyy3cMs 에서 `is_live=true`와 플랫폼 `live` 상태 중 프레임 106→1220, 재생 시간 7.26→44.44초를 확인했다. 이후 플랫폼 `complete`, 송신 59.977초 완료를 확인하고 테스트 일정을 일시중지하고 기존 연결을 복구했다. 로컬 증적은 `/private/tmp/replay-auto-live-final.json`이며 운영 배포 증거가 아니다.
+
+### 요일 제외 및 운영 큐 검증
+
+2026-09-29 화요일 12:01:50 KST에 화요일을 제외하고 12:02 일정을 headless UI로 저장했다. 당일 12:02:25까지 실행/작업 0건, 다음 실행은 9월 30일 수요일 12:02임을 확인했다. 확인 후 테스트 일정을 일시중지했다. 증적 `/private/tmp/replay-weekday-exclusion.json`.
+
+운영 큐는 현재 API와 버전이 일치할 때만 자동 송출을 진행한다. 기능 비활성 시 스키마 접근을 생략하며, 일정 생성/재개에서 큐를 깨우고 다음 예약·진행 중 회차를 DB에서 복원한다. 일시중지해도 이미 시작한 방송의 종료 확인은 이어간다. 큐 지연·중복 수신·외부 호출 실패는 기존 DB lease와 재시도로 처리한다. 운영 설정 및 배포 완료를 의미하지 않는다.

@@ -195,6 +195,63 @@ def test_recurrence_timezone_and_dst():
     assert next_occurrence(fall, first) == datetime.fromisoformat('2026-11-02T01:30:00-05:00').timestamp()
 
 
+def test_production_wakeup_survives_pause_restart_and_active_run(automatic):
+    client, service, user, now, payload = automatic
+    assert service.next_wakeup() is None
+    rule = client.post('/api/automations', json=payload).json()
+    assert service.next_wakeup() == rule['next_run']
+    client.put('/api/automations/' + rule['id'], json={'enabled': False})
+    assert service.next_wakeup() is None
+    client.put('/api/automations/' + rule['id'], json={'enabled': True})
+    now[0] = rule['next_run']
+    claim = service.claim()
+    client.put('/api/automations/' + rule['id'], json={'enabled': False})
+    # Pausing future broadcasts must keep observing the already running one.
+    assert service.next_wakeup() == now[0] + 120
+    service.record(claim, state='completed')
+    assert service.next_wakeup() is None
+
+
+def test_tuesday_excluded_never_claimed_at_ten_second_boundary(automatic):
+    client, service, user, now, payload = automatic
+    now[0] = datetime.fromisoformat('2026-09-29T12:01:50+09:00').timestamp()
+    due = now[0] + 10
+    payload.update(time='12:02', weekdays=[0, 2, 3, 4, 5, 6])
+    excluded = client.post('/api/automations', json=payload).json()
+    assert excluded['next_run'] == due + 86400
+    now[0] = due
+    assert service.tick() == {'processed': 0}
+    assert service.list(user)[0]['history'] == []
+    now[0] = due - 10
+    included = client.post('/api/automations', json={**payload, 'name': 'Tuesday', 'weekdays': [1]}).json()
+    assert included['next_run'] == due
+    now[0] = due
+    claim = service.claim()
+    assert claim['id'] == included['id']
+    assert service.claim() is None
+
+
+def test_queue_endpoints_include_schedule_deadlines_and_notify_on_admission(automatic, monkeypatch):
+    client, service, user, now, payload = automatic
+    notifications = []
+    from server.dispatch_wakeup import DispatchWakeup
+    monkeypatch.setattr(DispatchWakeup, 'notify', lambda *_args, **_kwargs: notifications.append(True) or True)
+    assert client.get('/api/live').json()['automations_enabled'] is True
+    rule = client.post('/api/automations', json=payload).json()
+    assert notifications == [True]
+    # The coordinator endpoint reads the earliest job/schedule deadline.
+    monkeypatch.setattr(service.repo, 'next_wakeup', lambda: None)
+    headers = {'Authorization': 'Bearer ' + client.app.state.settings.control_token}
+    assert client.post('/internal/next-wakeup', headers=headers).json()['at'] == rule['next_run']
+    client.put('/api/automations/' + rule['id'], json={'enabled': False})
+    assert client.post('/internal/next-wakeup', headers=headers).json()['at'] is None
+    client.put('/api/automations/' + rule['id'], json={'enabled': True})
+    assert len(notifications) == 2
+    now[0] = rule['next_run']
+    assert client.post('/internal/automations/tick', headers=headers).status_code == 200
+    assert len(notifications) == 2  # Consumer owns the followup; no wakeup storm.
+
+
 def test_default_off_has_no_schema_requirement(commercial):
     client, repo, objects = commercial
     assert client.get('/api/automations').json() == {'enabled': False, 'items': []}

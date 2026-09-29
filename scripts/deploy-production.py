@@ -1,4 +1,4 @@
-"""Deploy a verified main commit without exporting production secrets.
+"""Deploy a verified deploy/replay commit without exporting production secrets.
 
 Remote Vercel builds use project-managed secrets. Only release identifiers are
 overridden. Candidates are built before either production alias is promoted.
@@ -37,16 +37,17 @@ def run(args, *, cwd=ROOT, env=None, timeout=900):
         raise ReleaseError('COMMAND_FAILED') from None
 
 
-def assert_current_main(sha):
+def assert_current_release(sha):
     if (os.environ.get('GITHUB_REPOSITORY') != 'hhj4861/replay-live'
-            or os.environ.get('GITHUB_REF') != 'refs/heads/main'
+            or os.environ.get('GITHUB_REF') != 'refs/heads/deploy/replay'
+            or os.environ.get('GITHUB_REF_PROTECTED') != 'true'
             or os.environ.get('GITHUB_EVENT_NAME') not in {'push', 'workflow_dispatch'}
             or not re.fullmatch(r'[0-9a-f]{40}', sha)
             or run(['git', 'rev-parse', 'HEAD']) != sha):
-        raise ReleaseError('MAIN_COMMIT_REQUIRED')
-    remote = run(['git', 'ls-remote', 'origin', 'refs/heads/main']).split()
-    if not remote or remote[0] != sha:
-        raise ReleaseError('SUPERSEDED_MAIN_COMMIT')
+        raise ReleaseError('PROTECTED_RELEASE_COMMIT_REQUIRED')
+    remote = run(['git', 'ls-remote', 'origin', 'refs/heads/deploy/replay']).split()
+    if remote != [sha, 'refs/heads/deploy/replay']:
+        raise ReleaseError('SUPERSEDED_RELEASE_COMMIT')
 
 
 def prepare_sources(destination, sha, snapshot):
@@ -165,7 +166,7 @@ def publish(platform, directory, sha, snapshot, report, save):
         save()
         report['candidates'][role] = platform.stage(role, directory / role, version, snapshot, sha)
         save()
-    assert_current_main(sha)
+    assert_current_release(sha)
     if any(platform.current(role) != previous[role] for role in PROJECTS):
         raise ReleaseError('PRODUCTION_CHANGED_DURING_BUILD')
     touched = []
@@ -218,7 +219,7 @@ def main():
     try:
         if not args.execute:
             raise ReleaseError('EXPLICIT_EXECUTE_REQUIRED')
-        assert_current_main(sha)
+        assert_current_release(sha)
         platform = Vercel()
         with tempfile.TemporaryDirectory(prefix='replay-release-') as temp:
             directory = Path(temp)

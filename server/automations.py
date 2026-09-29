@@ -8,7 +8,7 @@ import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import HTTPException
-from sqlalchemy import Boolean, Column, Float, MetaData, String, Table, Text, insert, select, update
+from sqlalchemy import Boolean, Column, Float, MetaData, String, Table, Text, func, insert, select, update
 
 from .auth import Principal
 from .repository import NotFound, RepositoryError, QuotaExceeded, LeaseLost
@@ -155,6 +155,17 @@ class Automations:
             if enabled is True and not row['enabled']:
                 values['next_run'] = next_occurrence(json.loads(row['config_json']), self.clock())
             connection.execute(update(schedules).where(schedules.c.id == identifier).values(**values))
+
+    def next_wakeup(self):
+        """Persisted deadlines keep the production queue alive without a browser."""
+        with self.repo.engine.connect() as connection:
+            pending = connection.execute(select(func.min(schedules.c.next_run)).where(
+                schedules.c.deleted.is_(False), schedules.c.enabled.is_(True),
+                schedules.c.active_run.is_(None))).scalar_one()
+            active = connection.execute(select(func.min(schedules.c.lease_until)).where(
+                schedules.c.deleted.is_(False), schedules.c.active_run.is_not(None))).scalar_one()
+        candidates = [value for value in (pending, active) if value is not None]
+        return min(candidates) if candidates else None
 
     def claim(self):
         with self.repo._transaction() as connection:
@@ -322,6 +333,7 @@ def install_automations(app, cfg, repo, keys, connections, objects, writer, cont
     channel = YouTubeChannel(repo, keys, cfg.public_url.rstrip('/') + '/api/youtube-channel/callback')
     service = Automations(repo, keys, connections, channel, objects, cfg)
     app.state.automations = service
+    app.state.automations_enabled = enabled
 
     def require_enabled():
         if not enabled:
@@ -357,11 +369,15 @@ def install_automations(app, cfg, repo, keys, connections, objects, writer, cont
     def create(payload: dict, user=Depends(writer)):
         policy.check(user, action='broadcast')
         try:
-            return service.create(user, payload)
+            result = service.create(user, payload)
         except (ChannelError, RepositoryError, HTTPException):
             raise
         except ValueError as error:
             raise HTTPException(400, str(error)) from None
+        # Creation is durable before notification. Do not turn a lost wakeup
+        # acknowledgement into a failed create that users might duplicate.
+        notify()
+        return result
 
     class Status(BaseModel):
         model_config = {'extra': 'forbid'}
@@ -370,6 +386,8 @@ def install_automations(app, cfg, repo, keys, connections, objects, writer, cont
     @app.put('/api/automations/{identifier}', dependencies=[Depends(require_enabled)])
     def change(identifier: str, payload: Status, user=Depends(writer)):
         service.change(user, identifier, enabled=payload.enabled)
+        if payload.enabled:
+            notify()
         return {'ok': True}
 
     @app.delete('/api/automations/{identifier}', dependencies=[Depends(require_enabled)])
@@ -413,8 +431,8 @@ def install_automations(app, cfg, repo, keys, connections, objects, writer, cont
     @app.post('/internal/automations/tick', dependencies=[Depends(control), Depends(require_enabled)])
     def tick():
         result = service.tick()
-        if result['processed']:
-            notify()
+        # The queue consumer dispatches admitted jobs and publishes the next
+        # deadline itself; emitting here would create an immediate wakeup loop.
         return result
 
     return channel.http.close
