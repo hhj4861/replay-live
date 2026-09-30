@@ -404,7 +404,7 @@ class _ProxyHTTPSConnection(_PinnedHTTPSConnection):
             raise
 
 
-def _proxy_authorization(value):
+def _proxy_authorization(value, *, renew_session=False):
     try:
         parsed = urlsplit(value)
         if (parsed.scheme != 'http' or parsed.hostname != 'gw.dataimpulse.com' or parsed.port != 823
@@ -415,8 +415,14 @@ def _proxy_authorization(value):
         if any(ord(c) < 33 or ord(c) > 126 for c in login + password) or ':' in login:
             raise ValueError()
         # A single egress session covers metadata, signatures and media bytes.
-        if 'sessid.' not in login:
-            login += (';' if '__' in login else '__') + 'sessid.' + uuid.uuid4().hex
+        # Recovery replaces only the session; account and targeting stay intact.
+        account, separator, parameters = login.partition('__')
+        parts = parameters.split(';') if separator else []
+        if renew_session:
+            parts = [part for part in parts if not part.startswith('sessid.')]
+        if not any(part.startswith('sessid.') for part in parts):
+            parts.append('sessid.' + uuid.uuid4().hex)
+        login = account + '__' + ';'.join(parts)
         return base64.b64encode(f'{login}:{password}'.encode()).decode('ascii')
     except (ValueError, TypeError):
         raise SourceImportError('SOURCE_PROXY_UNAVAILABLE') from None
@@ -465,10 +471,18 @@ def _media_headers(*layers):
     return _headers(merged, metadata=False)
 
 
+def _retryable_proxy_failure(error):
+    return (error.code == 'SOURCE_INCOMPLETE'
+            or (error.code == 'SOURCE_UNAVAILABLE' and error.reason in {
+                'network_timeout', 'connection_reset', 'connection_error'})
+            or (error.code == 'SOURCE_PROXY_UNAVAILABLE' and error.reason == 'proxy_rejected'
+                and error.http_status in {502, 503, 504}))
+
+
 class _Transport:
-    def __init__(self, budget, proxy_url=None):
+    def __init__(self, budget, proxy_url=None, *, renew_session=False):
         self.budget = budget
-        self.proxy = _proxy_authorization(proxy_url) if proxy_url else None
+        self.proxy = _proxy_authorization(proxy_url, renew_session=renew_session) if proxy_url else None
 
     @contextmanager
     def response(self, url, *, headers=None, method='GET', data=None):
@@ -562,6 +576,9 @@ class _Transport:
                     payload = b'' if method == 'HEAD' else b''.join(self._read(response, metadata=True, limit=_METADATA_LIMIT))
                     return response.status, dict(response.getheaders()), payload, final_url
             except SourceImportError as error:
+                # Let the import restart metadata and media together on a new IP.
+                if self.proxy and _retryable_proxy_failure(error):
+                    raise
                 if (method not in {'GET', 'HEAD'} or error.code not in {'SOURCE_INCOMPLETE', 'SOURCE_UNAVAILABLE'}
                         or not self.budget.retry()):
                     raise
@@ -582,6 +599,8 @@ class _Transport:
                 # copy of the partial segment. Failed bytes still count as traffic.
                 file.seek(offset)
                 file.truncate()
+                if self.proxy and _retryable_proxy_failure(error):
+                    raise
                 if error.code not in {'SOURCE_INCOMPLETE', 'SOURCE_UNAVAILABLE'} or not self.budget.retry():
                     raise
 
@@ -961,38 +980,56 @@ def download_source(source, output: Path, *, max_bytes: int, max_duration: float
 
     try:
         budget.check()
-        with tempfile.TemporaryDirectory(prefix='source-', dir=output.parent) as directory:
-            rounded_duration = None
-            if normalized['provider'] == 'direct':
-                formats = [{'url': normalized['url'], 'protocol': 'https'}]
-                expected_duration = None
-            else:
-                info = _extract(normalized, transport)
-                _recording(info, max_duration)
-                if normalized['provider'] == 'youtube' and isinstance(info.get('title'), str):
-                    # Display text only: never use a platform title as a filesystem path.
-                    title = ''.join(' ' if unicodedata.category(c) in {'Cc', 'Cf'} else c
-                                    for c in info['title'])
-                    source_title = ' '.join(title.split())[:180].strip() or None
-                formats = _select_formats(info, transcode=use_proxy)
-                expected_duration = float(info['duration']) if info.get('duration') is not None else None
-                if (normalized['provider'] == 'youtube' and expected_duration is not None
-                        and expected_duration.is_integer()):
-                    rounded_duration, expected_duration = expected_duration, None
-            finish_stage()
-            stage, stage_started = 'download', time.monotonic()
-            paths = []
-            for index, fmt in enumerate(formats):
-                path = Path(directory) / f'input-{index}.media'
-                declared_duration = _download_format(fmt, path, transport, max_duration)
-                if declared_duration is not None:
-                    expected_duration = max(expected_duration or 0, declared_duration)
-                paths.append(path)
-            finish_stage()
-            stage, stage_started = 'prepare_mp4', time.monotonic()
-            _make_mp4(paths, output, budget, max_duration, expected_duration=expected_duration,
-                      rounded_duration=rounded_duration, transcode=use_proxy)
-            finish_stage()
+        while True:
+            try:
+                with tempfile.TemporaryDirectory(prefix='source-', dir=output.parent) as directory:
+                    rounded_duration = None
+                    if normalized['provider'] == 'direct':
+                        formats = [{'url': normalized['url'], 'protocol': 'https'}]
+                        expected_duration = None
+                    else:
+                        info = _extract(normalized, transport)
+                        _recording(info, max_duration)
+                        if normalized['provider'] == 'youtube' and isinstance(info.get('title'), str):
+                            # Display text only: never use a platform title as a filesystem path.
+                            title = ''.join(' ' if unicodedata.category(c) in {'Cc', 'Cf'} else c
+                                            for c in info['title'])
+                            source_title = ' '.join(title.split())[:180].strip() or None
+                        formats = _select_formats(info, transcode=use_proxy)
+                        expected_duration = float(info['duration']) if info.get('duration') is not None else None
+                        if (normalized['provider'] == 'youtube' and expected_duration is not None
+                                and expected_duration.is_integer()):
+                            rounded_duration, expected_duration = expected_duration, None
+                    finish_stage()
+                    stage, stage_started = 'download', time.monotonic()
+                    paths = []
+                    for index, fmt in enumerate(formats):
+                        path = Path(directory) / f'input-{index}.media'
+                        declared_duration = _download_format(fmt, path, transport, max_duration)
+                        if declared_duration is not None:
+                            expected_duration = max(expected_duration or 0, declared_duration)
+                        paths.append(path)
+                    finish_stage()
+                    stage, stage_started = 'prepare_mp4', time.monotonic()
+                    _make_mp4(paths, output, budget, max_duration, expected_duration=expected_duration,
+                              rounded_duration=rounded_duration, transcode=use_proxy)
+                    finish_stage()
+                break
+            except SourceImportError as error:
+                if (not use_proxy or stage not in {'metadata', 'download'}
+                        or error is budget.cancel_error or not _retryable_proxy_failure(error)):
+                    raise
+                # yt-dlp latches transport failures to stop its own fallbacks.
+                # Clear only this recoverable error, retaining every usage limit.
+                if budget.failure is error:
+                    budget.failure = None
+                if not budget.retry():
+                    raise
+                transport = _Transport(budget, proxy_url, renew_session=True)
+                logging.getLogger(__name__).info(json.dumps({'event': 'source_proxy_rotated',
+                    'stage': stage, 'reason': error.reason, 'http_status': error.http_status,
+                    'retries': budget.retries}))
+                stage, stage_started = 'metadata', time.monotonic()
         stage, stage_started = 'checksum', time.monotonic()
         digest = hashlib.sha256()
         with output.open('rb') as file:
