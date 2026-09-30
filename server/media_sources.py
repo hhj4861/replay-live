@@ -9,6 +9,8 @@ Network payload is capped at max_bytes + 16 MiB (metadata); temporary disk at
 2 * max_bytes (downloaded inputs plus one output). No source URL is an error text.
 """
 from contextlib import contextmanager
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import base64
 import http.client
@@ -74,6 +76,7 @@ _METADATA_LIMIT = 4 * 1024 * 1024
 _METADATA_TOTAL = 16 * 1024 * 1024
 _MAX_REQUESTS = 5000
 _MAX_SEGMENTS = 4096
+_SEGMENT_CONCURRENCY = 4
 
 
 class SourceImportError(ValueError):
@@ -218,47 +221,73 @@ class _Budget:
         self.retries = 0
         self.failure = None
         self.cancel_error = None
+        self._lock = threading.RLock()
+        self._transfer_error = None
 
     def check(self):
-        try:
-            self.check_active()
-        except Exception as error:
-            self.cancel_error = error
-            raise
-        if time.monotonic() >= self.deadline:
-            raise SourceImportError('SOURCE_TIMEOUT')
-        if self.failure:
-            raise self.failure
+        with self._lock:
+            try:
+                self.check_active()
+            except Exception as error:
+                self.cancel_error = error
+                raise
+            if time.monotonic() >= self.deadline:
+                raise SourceImportError('SOURCE_TIMEOUT')
+            if self.failure:
+                raise self.failure
+            if self._transfer_error:
+                raise self._transfer_error
+
+    def request(self):
+        with self._lock:
+            self.check()
+            self.requests += 1
+            if self.requests > _MAX_REQUESTS:
+                raise SourceImportError('SOURCE_TOO_COMPLEX')
+
+    def abort_transfer(self, error):
+        with self._lock:
+            if self._transfer_error is None:
+                self._transfer_error = error
+
+    def finish_transfer(self):
+        # Only after every segment thread has exited; import-level recovery
+        # can then reuse this budget without resetting any usage counters.
+        with self._lock:
+            self._transfer_error = None
 
     def remaining(self):
         self.check()
         return max(.001, self.deadline - time.monotonic())
 
     def retry(self):
-        self.check()
-        # One recovery across the entire import, including manifests/segments.
-        # Keep the original byte, wire, request and wall-clock budgets.
-        if self.retries >= 1:
-            return False
-        self.retries += 1
-        return True
+        with self._lock:
+            self.check()
+            # One recovery across the entire import, including manifests/segments.
+            # Keep the original byte, wire, request and wall-clock budgets.
+            if self.retries >= 1:
+                return False
+            self.retries += 1
+            return True
 
     def consume(self, count, *, metadata):
-        self.check()
-        if metadata:
-            self.metadata_bytes += count
-            if self.metadata_bytes > _METADATA_TOTAL:
-                raise SourceImportError('SOURCE_METADATA_TOO_LARGE')
-        else:
-            self.media_bytes += count
-            if self.media_bytes > self.max_bytes:
-                raise SourceImportError('SOURCE_TOO_LARGE')
+        with self._lock:
+            self.check()
+            if metadata:
+                self.metadata_bytes += count
+                if self.metadata_bytes > _METADATA_TOTAL:
+                    raise SourceImportError('SOURCE_METADATA_TOO_LARGE')
+            else:
+                self.media_bytes += count
+                if self.media_bytes > self.max_bytes:
+                    raise SourceImportError('SOURCE_TOO_LARGE')
 
     def consume_wire(self, count):
-        self.wire_bytes += count
-        # Includes HTTP headers and chunk framing in addition to body budgets.
-        if self.wire_bytes > self.max_bytes + _METADATA_TOTAL + 4 * 1024 * 1024:
-            raise SourceImportError('SOURCE_TOO_LARGE')
+        with self._lock:
+            self.wire_bytes += count
+            # Includes HTTP headers and chunk framing in addition to body budgets.
+            if self.wire_bytes > self.max_bytes + _METADATA_TOTAL + 4 * 1024 * 1024:
+                raise SourceImportError('SOURCE_TOO_LARGE')
 
 
 def _resolve(host, budget):
@@ -309,9 +338,11 @@ class _CheckedSocketReader(io.RawIOBase):
         # can otherwise keep http.client.getresponse alive beyond the deadline.
         self.sock.settimeout(min(5, self.budget.remaining()))
         count = self.raw.readinto(buffer)
-        self.budget.check()
         if count:
+            # These bytes already crossed the wire even if a sibling failed
+            # while this socket was blocked in readinto.
             self.budget.consume_wire(count)
+        self.budget.check()
         return count
 
     def close(self):
@@ -493,10 +524,7 @@ class _Transport:
         connection = response = None
         try:
             for redirect in range(6):
-                self.budget.check()
-                self.budget.requests += 1
-                if self.budget.requests > _MAX_REQUESTS:
-                    raise SourceImportError('SOURCE_TOO_COMPLEX')
+                self.budget.request()
                 parsed = urlsplit(current)
                 addresses = _resolve(parsed.hostname, self.budget)
                 if self.proxy:
@@ -808,6 +836,50 @@ def _hls_segments(url, transport, headers, max_duration):
     return segments, duration
 
 
+def _download_segments(urls, path, transport, headers):
+    """Bound prefetch to four segments, then append in manifest order."""
+    budget = transport.budget
+    with tempfile.TemporaryDirectory(prefix='segments-', dir=path.parent) as directory:
+        def fetch(index):
+            part = Path(directory) / str(index)
+            try:
+                budget.check()
+                with part.open('xb') as file:
+                    transport.download(urls[index], file, headers=headers)
+                return part
+            except BaseException as error:
+                budget.abort_transfer(error)
+                raise
+
+        pool = ThreadPoolExecutor(max_workers=_SEGMENT_CONCURRENCY, thread_name_prefix='source-segment')
+        try:
+            pending = deque()
+            next_index = 0
+            with path.open('xb') as output:
+                while next_index < min(len(urls), _SEGMENT_CONCURRENCY):
+                    pending.append(pool.submit(fetch, next_index))
+                    next_index += 1
+                while pending:
+                    part = pending.popleft().result()
+                    budget.check()
+                    with part.open('rb') as file:
+                        while chunk := file.read(_CHUNK):
+                            budget.check()
+                            output.write(chunk)
+                    part.unlink()
+                    if next_index < len(urls):
+                        pending.append(pool.submit(fetch, next_index))
+                        next_index += 1
+        except BaseException as error:
+            budget.abort_transfer(error)
+            raise
+        finally:
+            # Stop siblings cooperatively through all budgeted socket reads.
+            # Never delete their files or rotate sessions while they still run.
+            pool.shutdown(wait=True, cancel_futures=True)
+            budget.finish_transfer()
+
+
 def _download_format(fmt, path, transport, max_duration):
     headers = fmt.get('http_headers') or {}
     protocol = fmt.get('protocol')
@@ -839,10 +911,20 @@ def _download_format(fmt, path, transport, max_duration):
         duration = declared_duration or None
     else:
         urls = [url]
-    with path.open('xb') as file:
-        for segment in urls:
-            transport.budget.check()
-            transport.download(segment, file, headers=headers)
+    started = time.monotonic()
+    before_bytes = transport.budget.media_bytes
+    parallel = bool(transport.proxy) and len(urls) > 1
+    if parallel:
+        _download_segments(urls, path, transport, headers)
+    else:
+        with path.open('xb') as file:
+            for segment in urls:
+                transport.budget.check()
+                transport.download(segment, file, headers=headers)
+    logging.getLogger(__name__).info(json.dumps({'event': 'source_transfer',
+        'segments': len(urls), 'concurrency': min(len(urls), _SEGMENT_CONCURRENCY) if parallel else 1,
+        'elapsed_ms': round((time.monotonic() - started) * 1000),
+        'media_bytes': transport.budget.media_bytes - before_bytes}))
     return duration
 
 
