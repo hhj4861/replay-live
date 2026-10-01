@@ -26,7 +26,7 @@ import { Progress } from '@/components/ui/progress';
 import { Radio, Upload, Play, Square, Download, Trash2, ChevronDown, Link as LinkIcon, LoaderCircle,
   Check, ArrowRight, Video, Library, CalendarClock, Clock3, ArrowUpRight, X, History, UserRound, Users } from 'lucide-react';
 
-type Media = { id: string; name: string; status: string; bytes: number; duration: number; error_code?: string };
+type Media = { id: string; name: string; status: string; bytes: number; duration: number; error_code?: string; recovering?: boolean };
 type Job = BroadcastLinks & { id: string; title: string; media_id: string; media_name?: string; target: string; state: string; progress: number; duration: number; scheduled: number; error_code?: string };
 type Signed = { url: string; method: string; headers: Record<string, string> };
 type Health = { ready: boolean; max_upload_mb: number; max_duration_seconds: number; retention_days: number; max_concurrent: number };
@@ -155,11 +155,13 @@ export default function CommercialHome() {
   const hasLive = targets.some(target => target !== 'local');
   const maxDestinations = catalog?.max_destinations || health?.max_concurrent || 1;
   const tooMany = targets.length > maxDestinations;
-  const importedMedia = media.find(item => item.id === importId);
+  const importedMedia = media.find(item => item.id === importId)
+    || (!importId ? media.find(item => item.status === 'importing') : undefined);
+  const recovering = importedMedia?.status === 'importing' && importedMedia.recovering === true;
   const storage = usage ? storageBreakdown(usage) : undefined;
   const failureMessage = (code: string) => code === 'SOURCE_DURATION_EXCEEDED'
     ? sourceDurationFailure(health?.max_duration_seconds) : failures[code];
-  const importPending = !!importId && (!importedMedia || !['ready', 'failed', 'stopped'].includes(importedMedia.status));
+  const importPending = (!!importId || !!importedMedia) && (!importedMedia || !['ready', 'failed', 'stopped'].includes(importedMedia.status));
   const sourcePlatform = sourceCatalog?.sources.find(item => item.id === sourceProvider);
   const googleSignedIn = useCallback(() => { setAuthenticated(true); setError(''); }, []);
   const resetAccount = useCallback(() => {
@@ -228,6 +230,18 @@ export default function CommercialHome() {
         if (!current()) return;
         setMedia(m);
         const selection = mediaSelection.reconcile(m, identity, selectionGeneration);
+        if (selection.kind === 'default' && selection.allowFirst) {
+          const pending = m.find(item => item.status === 'importing');
+          if (pending) {
+            // Restore server-owned work after a refresh without issuing another
+            // import or overriding an explicit selection made in this page.
+            const restored = mediaSelection.begin(identity);
+            if (mediaSelection.register(restored, pending.id)) {
+              setImportId(pending.id); setPreparationKind('import'); setMediaId('');
+            }
+            return;
+          }
+        }
         if (selection.kind === 'ready') {
           setMediaId(value => mediaSelection.capture() === selectionGeneration ? selection.id : value); setSourceMode('library');
           setNotice('영상이 준비됐습니다. 방송할 채널을 선택해 주세요.');
@@ -616,7 +630,7 @@ export default function CommercialHome() {
         </fieldset>
         {sourceMode === 'library' ? <div className="studio-library"><div className="studio-library-heading"><strong>내 영상</strong><span>{media.length}개</span></div>
           <ul className="studio-media-list" aria-label="송출할 영상 선택">{media.map(item => <li key={item.id} className={mediaId === item.id ? 'is-selected' : ''}>
-            <button type="button" className="studio-media-choice" aria-pressed={mediaId === item.id} aria-label={`${item.name} 선택`} disabled={!!busy || importPending || item.status !== 'ready'} onClick={() => { mediaSelection.select(); setMediaId(item.id); setConfirmed(false); }}><span className="studio-file-icon"><Video size={18} /></span><span><strong>{item.name}</strong><small>{item.status === 'ready' ? `${clock(item.duration)} · ${size(item.bytes)}` : states[item.status] || item.status}</small>{item.error_code && <small className="failure">{failureMessage(item.error_code) || '영상을 준비하지 못했습니다. 다시 추가해 주세요.'}</small>}</span>{mediaId === item.id && <Check size={17} className="studio-media-check" aria-hidden="true" />}</button>
+            <button type="button" className="studio-media-choice" aria-pressed={mediaId === item.id} aria-label={`${item.name} 선택`} disabled={!!busy || importPending || item.status !== 'ready'} onClick={() => { mediaSelection.select(); setMediaId(item.id); setConfirmed(false); }}><span className="studio-file-icon"><Video size={18} /></span><span><strong>{item.name}</strong><small>{item.status === 'ready' ? `${clock(item.duration)} · ${size(item.bytes)}` : item.recovering ? '연결 복구 중' : states[item.status] || item.status}</small>{item.error_code && <small className="failure">{failureMessage(item.error_code) || '영상을 준비하지 못했습니다. 다시 추가해 주세요.'}</small>}</span>{mediaId === item.id && <Check size={17} className="studio-media-check" aria-hidden="true" />}</button>
             {canOperate && <button type="button" className="studio-delete" aria-label={`${item.name} 삭제`} disabled={!!busy || ['importing', 'validating', 'pending'].includes(item.status)} onClick={() => void action('delete', async () => { await api(`/media/${item.id}`, { method: 'DELETE' }); setMedia(current => current.filter(value => value.id !== item.id)); if (item.id === importId) setImportId(''); setNotice('보관함에서 영상을 삭제했습니다.'); })}><Trash2 size={16} /></button>}
           </li>)}</ul>{!media.length && <div className="studio-library-empty"><Library size={24} /><p>아직 보관한 영상이 없어요.</p><button type="button" onClick={() => setSourceMode('link')}>영상 링크로 추가하기 <ArrowRight size={14} /></button></div>}
           <p className="hint studio-retention">영상과 결과 파일은 {health?.retention_days ?? '—'}일 동안 보관됩니다.</p></div> : sourceMode === 'link' ? <form className="source-import-form" onSubmit={importSource}>
@@ -638,7 +652,7 @@ export default function CommercialHome() {
           </details>
           <Button type="submit" className="source-import-button" disabled={!canOperate || !!busy || !connected || !health || !sourcePlatform || !sourceUrl.trim() || importPending}>
             {busy === 'import' ? <LoaderCircle size={16} className="source-spinner" aria-hidden="true" /> : <Download size={16} aria-hidden="true" />}
-            {busy === 'import' ? '가져오기 요청 중…' : importPending ? '영상 준비 중…' : '영상 가져오기'}
+            {busy === 'import' ? '가져오기 요청 중…' : recovering ? '연결 복구 중…' : importPending ? '영상 준비 중…' : '영상 가져오기'}
           </Button>
 
           {importFailure && <LocalImportFailure failure={importFailure} disabled={!!busy || !canOperate || !connected || importPending}
@@ -650,8 +664,8 @@ export default function CommercialHome() {
         </div>}
         <input type="file" ref={picker} accept=".mp4,video/mp4" hidden onChange={event => void upload(event.target.files?.[0])} />
         {busy === 'upload' && <Progress value={uploadProgress} aria-label="영상 업로드 진행률" />}
-        {importPending && <output className="source-import-status" aria-live="polite"><LoaderCircle size={18} className="source-spinner" aria-hidden="true" /><span><strong>{states[importedMedia?.status || (preparationKind === 'upload' ? 'validating' : 'importing')] || '영상 준비 중'}</strong><small>준비와 검사가 끝나면 이 영상이 자동으로 선택됩니다. 송출 대상은 미리 설정할 수 있습니다.</small></span></output>}
-        {importedMedia && ['failed', 'stopped'].includes(importedMedia.status) && <div className="source-import-status failed" role="alert"><div><strong>영상을 준비하지 못했습니다.</strong><p>{failureMessage(importedMedia.error_code || '') || (preparationKind === 'upload' ? '업로드한 영상이 재생 가능한 MP4인지 확인하고 다시 선택하세요.' : '링크의 공개 여부와 유효 기간을 확인하세요. 플랫폼에서 접근을 제한할 수도 있습니다.')}</p><div className="source-import-actions">{preparationKind === 'import' && canRetrySource(importedMedia.error_code || '') && <Button size="sm" variant="outline" disabled={!canOperate || !!busy || !connected} onClick={() => { setSourceMode('link'); void importSource(); }}>현재 링크로 다시 가져오기</Button>}<Button size="sm" variant="ghost" onClick={() => setSourceMode('file')}>파일로 업로드</Button></div></div></div>}
+        {importPending && <output className="source-import-status" aria-live="polite"><LoaderCircle size={18} className="source-spinner" aria-hidden="true" /><span><strong>{recovering ? '연결 복구 중' : states[importedMedia?.status || (preparationKind === 'upload' ? 'validating' : 'importing')] || '영상 준비 중'}</strong><small>{recovering ? '다운로드 연결이 잠시 끊겨 자동으로 다시 시도하고 있어요. 다시 누르지 않아도 됩니다.' : '준비와 검사가 끝나면 이 영상이 자동으로 선택됩니다. 송출 대상은 미리 설정할 수 있습니다.'}</small></span></output>}
+        {importedMedia && ['failed', 'stopped'].includes(importedMedia.status) && <div className="source-import-status failed" role="alert"><div><strong>영상을 준비하지 못했습니다.</strong><p>{failureMessage(importedMedia.error_code || '') || (preparationKind === 'upload' ? '업로드한 영상이 재생 가능한 MP4인지 확인하고 다시 선택하세요.' : '링크의 공개 여부와 유효 기간을 확인하세요. 플랫폼에서 접근을 제한할 수도 있습니다.')}</p><div className="source-import-actions">{preparationKind === 'import' && sourceUrl.trim() && canRetrySource(importedMedia.error_code || '') && <Button size="sm" variant="outline" disabled={!canOperate || !!busy || !connected} onClick={() => { setSourceMode('link'); void importSource(); }}>현재 링크로 다시 가져오기</Button>}<Button size="sm" variant="ghost" onClick={() => setSourceMode('file')}>파일로 업로드</Button></div></div></div>}
       </div>
       </div>
     </section><div className="studio-broadcast-column"><form id="broadcast-form" onSubmit={create} noValidate>

@@ -115,3 +115,50 @@ To reproduce the browser check, build with `REPLAY_COMMERCIAL=1`,
 `node scripts/proxy-failure-browser-smoke.mjs <build-directory>`.
 Set `REPLAY_PLAYWRIGHT_MODULE` and optionally `REPLAY_CHROME_PATH` to installed
 local packages/binaries; the script always runs headless and blocks external URLs.
+
+## Delayed recovery and customer progress (2026-10-01)
+
+After the existing short request retries and first immediate proxy session change
+fail, wait five seconds and make one final fresh-session attempt. The maximum is
+three sessions total (two rotations), with the existing eight extra request retries,
+original deadline, request count and byte budgets shared across all sessions.
+The wait is cancellable and does not extend a lease or storage reservation beyond
+its existing deadline. Authentication, exhausted quota, access restrictions and
+TLS failures do not enter this recovery path. Metadata and signed media URLs are
+fetched anew after each session change; cross-session partial download resume is
+not supported. A persistent failure remains terminal after this final attempt.
+
+The worker reports recovery through its authenticated lease heartbeat. The existing
+media error-code column temporarily holds SOURCE_RECOVERING only while importing;
+the public API exposes this as recovering=true with no failure code. Lease validation,
+tenant matching and the importing-state condition protect the update. No schema
+migration is required. Normal downloading clears the phase, and terminal completion
+or failure replaces it and releases the reservation under the existing policy.
+The UI shows “연결 복구 중”, keeps the import button disabled, and recovers that state
+from the server after refresh. It still selects the prepared video when ready.
+
+This is bounded recovery using the existing provider, not a backup provider or an
+unlimited background retry queue. Verification uses simulated 502s, actual local
+media preparation/storage/preview and headless UI fixtures; no paid proxy traffic
+or production release is implied by local tests.
+
+Validation of this change:
+- 341 related Python tests passed (159 recovery/worker tests and 182 repository,
+  API, source and parallel-transfer tests). The old two-session expectation was
+  updated to the new three-session limit and revalidated.
+- 231 client tests, lint, TypeScript and the commercial build passed.
+- Ten headless scenarios passed, including recovery followed by success or final
+  failure across a page refresh, exactly one import POST, and zero JavaScript errors.
+- The recovery integration test injects two failed sessions, measures at least
+  five seconds of waiting, then verifies real local MP4 storage and preview.
+- Cancellation/deadline tests prevent a third connection; stale callbacks cannot
+  restore recovery after terminal failure. Tenant and reservation checks remain intact.
+
+### Image-build CI follow-up
+
+PR #57's push check twice failed on a `files.pythonhosted.org` socket read timeout
+while downloading pinned packages (API image first, media image on rerun). The same
+commit's PR check and both application verification runs passed. Both image builds
+now explicitly allow 60 seconds per socket read, retaining five connection attempts.
+Package pins, TLS verification and all CI gates remain unchanged. Validate the exact
+image builds in the hosted Cloudflare check before merging.
