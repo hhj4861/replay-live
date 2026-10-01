@@ -70,3 +70,48 @@ security and preflight tests passed in 64.55 seconds.
 
 Release references: [urllib3 2.8.0](https://github.com/urllib3/urllib3/releases/tag/2.8.0),
 [PyJWT 2.15.0](https://github.com/jpadilla/pyjwt/releases/tag/2.15.0).
+
+## Provider failure classification (2026-10-01)
+
+CONNECT responses previously retained only HTTP status. Recognize exact documented
+DataImpulse status-line identifiers and persist an optional allowlisted `proxy_error`
+in the existing failure callback. Never retain arbitrary reason phrases, headers,
+response bodies, source URLs, egress IPs or credentials. Unknown or mismatched
+identifiers remain generic; HTTP status alone must not be labelled as exhausted quota.
+
+Customer errors now distinguish destination connection failure, no available peer,
+concurrent connection limits, exhausted traffic, account/configuration errors and
+proxy access restrictions. Only the existing transient 502/503/504 recovery policy
+retries and rotates; quota, authentication and restrictions still stop immediately.
+The UI hides the same-link retry for known quota/configuration/access failures and
+keeps file upload available. This introduces no new provider, purchase or DB migration.
+
+A read-only production log query returned no events during this investigation.
+That is insufficient to classify a new user failure or establish a production
+success rate. The historic 502 is still only proven at CONNECT, not attributed to
+an exact provider subreason. New classification needs an actual provider status-line
+identifier in a subsequent import after deployment.
+
+Library media can already be reused for broadcasts without another download.
+Automatically matching a newly pasted URL to earlier media is not implemented in
+this diagnostic change; it needs a tenant-scoped retained source identity, including
+correct deletion, changed-name and retention behavior.
+
+Validation for provider classification:
+- 38 new tests passed for documented CONNECT reasons, unknown/mismatched messages,
+  retry/session bounds, callback validation, worker cleanup and released quota.
+- The existing 256 source/diagnostic/proxy/worker tests passed unchanged.
+- Web lint, TypeScript and the commercial build passed.
+- The actual built UI passed eight headless Chromium cases using synthetic local
+  auth/API fixtures: quota/configuration/access/bot failures hide same-link retry;
+  connect/no-peer/busy/unknown failures retain it. File upload remains available,
+  one import request is made, and no JavaScript errors occur in every case.
+- No production cookies, paid proxy traffic or real broadcast was used in tests.
+
+To reproduce the browser check, build with `REPLAY_COMMERCIAL=1`,
+`REPLAY_API_URL=http://127.0.0.1:18193`,
+`REPLAY_OIDC_AUTHORITY=https://synthetic.example`, and
+`REPLAY_OIDC_CLIENT_ID=synthetic-client`, then run
+`node scripts/proxy-failure-browser-smoke.mjs <build-directory>`.
+Set `REPLAY_PLAYWRIGHT_MODULE` and optionally `REPLAY_CHROME_PATH` to installed
+local packages/binaries; the script always runs headless and blocks external URLs.
