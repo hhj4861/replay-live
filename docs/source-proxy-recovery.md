@@ -57,3 +57,16 @@ After recovery, all 292 tests passed in the nine-module source-download, proxy,
 worker and media-import regression selection (65.84 seconds). The two warnings
 are existing Starlette/httpx and AnyIO deprecations. This is local verification;
 it does not establish production download success.
+
+### CI dependency audit follow-up
+
+The first PR CI failed its dependency audit on urllib3 2.7.0 and PyJWT 2.14.0.
+Upgrade only these packages to urllib3 2.8.0 and PyJWT 2.15.0 across the runtime
+pins, lock and input constraints. No audit exemptions or CI checks were removed.
+
+After the upgrade, dependency compatibility passed, pip-audit 2.9.0 reported no
+known vulnerabilities, and 510 source/proxy, authentication, storage, public
+security and preflight tests passed in 64.55 seconds.
+
+Release references: [urllib3 2.8.0](https://github.com/urllib3/urllib3/releases/tag/2.8.0),
+[PyJWT 2.15.0](https://github.com/jpadilla/pyjwt/releases/tag/2.15.0).
