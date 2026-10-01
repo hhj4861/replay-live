@@ -56,6 +56,13 @@ const failures: Record<string, string> = {
   SOURCE_RECORDING_REQUIRED: '생방송·재생목록 대신 녹화 영상 한 편의 링크를 입력하세요.',
   SOURCE_RESTRICTED: '로그인이나 플랫폼의 접근 제한으로 가져올 수 없습니다. 접근 가능한 MP4 다운로드 링크 또는 파일 업로드를 사용하세요.',
   SOURCE_PROXY_UNAVAILABLE: '영상 다운로드 연결을 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.',
+  SOURCE_PROXY_CONNECT_FAILED: '영상 서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+  SOURCE_PROXY_POOL_EMPTY: '현재 사용할 수 있는 다운로드 연결이 없습니다. 잠시 후 다시 시도해 주세요.',
+  SOURCE_PROXY_BUSY: '영상 다운로드 요청이 몰리고 있습니다. 잠시 후 다시 시도해 주세요.',
+  SOURCE_PROXY_QUOTA_EXHAUSTED: '서비스의 영상 다운로드 사용량이 소진되었습니다. 운영자의 확인이 필요합니다. 파일 업로드는 계속 이용할 수 있어요.',
+  SOURCE_PROXY_CONFIGURATION: '서비스의 영상 다운로드 설정을 확인해야 합니다. 운영자에게 문의하거나 파일을 업로드해 주세요.',
+  SOURCE_PROXY_ACCESS_DENIED: '다운로드 연결 서비스에서 이 영상 사이트로의 접근을 제한했습니다. 파일 업로드를 이용해 주세요.',
+
   SOURCE_BOT_CHECK_REQUIRED: '원본 플랫폼이 봇 확인을 요구해 영상을 가져오지 못했습니다. 브라우저에서 재생되는 공개 영상도 해당될 수 있습니다. 본인 영상의 MP4 파일을 업로드하세요.',
   SOURCE_ACCESS_DENIED: '원본 플랫폼이 영상 다운로드를 허용하지 않았습니다. 본인 영상의 MP4 파일을 업로드하거나, 사용 가능한 새 MP4 다운로드 링크를 입력하세요.',
   SOURCE_RATE_LIMITED: '원본 플랫폼이 요청을 일시적으로 제한했습니다. 잠시 후 다시 시도하거나 MP4 파일을 업로드하세요.',
@@ -73,6 +80,11 @@ const failures: Record<string, string> = {
   SOURCE_ENCODING_UNSUPPORTED: '이 다운로드 형식은 지원하지 않습니다. MP4 파일로 업로드하세요.',
   SOURCE_EXTRACTOR_UNAVAILABLE: '현재 이 플랫폼의 영상을 가져올 수 없습니다. MP4 파일로 업로드하세요.',
 };
+
+function canRetrySource(code: string) {
+  return !['SOURCE_PROXY_QUOTA_EXHAUSTED', 'SOURCE_PROXY_CONFIGURATION', 'SOURCE_PROXY_ACCESS_DENIED',
+    'SOURCE_RESTRICTED', 'SOURCE_BOT_CHECK_REQUIRED', 'SOURCE_ACCESS_DENIED', 'SOURCE_NOT_FOUND'].includes(code);
+}
 
 export default function CommercialHome() {
   const [authenticated, setAuthenticated] = useState(false);
@@ -639,7 +651,7 @@ export default function CommercialHome() {
         <input type="file" ref={picker} accept=".mp4,video/mp4" hidden onChange={event => void upload(event.target.files?.[0])} />
         {busy === 'upload' && <Progress value={uploadProgress} aria-label="영상 업로드 진행률" />}
         {importPending && <output className="source-import-status" aria-live="polite"><LoaderCircle size={18} className="source-spinner" aria-hidden="true" /><span><strong>{states[importedMedia?.status || (preparationKind === 'upload' ? 'validating' : 'importing')] || '영상 준비 중'}</strong><small>준비와 검사가 끝나면 이 영상이 자동으로 선택됩니다. 송출 대상은 미리 설정할 수 있습니다.</small></span></output>}
-        {importedMedia && ['failed', 'stopped'].includes(importedMedia.status) && <div className="source-import-status failed" role="alert"><div><strong>영상을 준비하지 못했습니다.</strong><p>{failureMessage(importedMedia.error_code || '') || (preparationKind === 'upload' ? '업로드한 영상이 재생 가능한 MP4인지 확인하고 다시 선택하세요.' : '링크의 공개 여부와 유효 기간을 확인하세요. 플랫폼에서 접근을 제한할 수도 있습니다.')}</p><div className="source-import-actions">{preparationKind === 'import' && <Button size="sm" variant="outline" disabled={!canOperate || !!busy || !connected} onClick={() => { setSourceMode('link'); void importSource(); }}>현재 링크로 다시 가져오기</Button>}<Button size="sm" variant="ghost" onClick={() => setSourceMode('file')}>파일로 업로드</Button></div></div></div>}
+        {importedMedia && ['failed', 'stopped'].includes(importedMedia.status) && <div className="source-import-status failed" role="alert"><div><strong>영상을 준비하지 못했습니다.</strong><p>{failureMessage(importedMedia.error_code || '') || (preparationKind === 'upload' ? '업로드한 영상이 재생 가능한 MP4인지 확인하고 다시 선택하세요.' : '링크의 공개 여부와 유효 기간을 확인하세요. 플랫폼에서 접근을 제한할 수도 있습니다.')}</p><div className="source-import-actions">{preparationKind === 'import' && canRetrySource(importedMedia.error_code || '') && <Button size="sm" variant="outline" disabled={!canOperate || !!busy || !connected} onClick={() => { setSourceMode('link'); void importSource(); }}>현재 링크로 다시 가져오기</Button>}<Button size="sm" variant="ghost" onClick={() => setSourceMode('file')}>파일로 업로드</Button></div></div></div>}
       </div>
       </div>
     </section><div className="studio-broadcast-column"><form id="broadcast-form" onSubmit={create} noValidate>

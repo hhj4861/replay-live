@@ -35,7 +35,7 @@ from urllib.parse import parse_qs, unquote, urljoin, urlsplit, urlunsplit
 import certifi
 
 from .media_runtime import _execute
-from .source_diagnostics import FAILURE_REASONS, SourceFailure
+from .source_diagnostics import FAILURE_REASONS, PROXY_ERRORS, SourceFailure
 
 
 _PROVIDERS = (
@@ -82,13 +82,45 @@ _IMPORT_REQUEST_RETRIES = 8
 
 
 class SourceImportError(ValueError):
-    def __init__(self, code='SOURCE_UNAVAILABLE', *, reason='unclassified', http_status=None):
+    def __init__(self, code='SOURCE_UNAVAILABLE', *, reason='unclassified', http_status=None, proxy_error=None):
         # Only our fixed codes are exposed; never include extractor exceptions.
         self.code = code if re.fullmatch(r'SOURCE_[A-Z_]+', str(code)) else 'SOURCE_UNAVAILABLE'
         self.reason = reason if isinstance(reason, str) and reason in FAILURE_REASONS else 'unclassified'
         self.http_status = http_status if type(http_status) is int and 100 <= http_status <= 599 else None
+        self.proxy_error = proxy_error if isinstance(proxy_error, str) and proxy_error in PROXY_ERRORS else None
         self.diagnostics = None
         super().__init__(self.code)
+
+
+# Only exact, documented status-line identifiers cross the transport boundary.
+# Raw reason phrases, headers, response bodies and credentials are never retained.
+_PROXY_ERRORS = {
+    'PORT_BLOCKED': (403, 'SOURCE_PROXY_ACCESS_DENIED'),
+    'SITE_PERMANENTLY_BLOCKED': (403, 'SOURCE_PROXY_ACCESS_DENIED'),
+    'HOST_BLOCKED': (403, 'SOURCE_PROXY_ACCESS_DENIED'),
+    'NO_USER': (407, 'SOURCE_PROXY_CONFIGURATION'),
+    'TRAFFIC_EXHAUSTED': (407, 'SOURCE_PROXY_QUOTA_EXHAUSTED'),
+    'THREADS_EXHAUSTED': (407, 'SOURCE_PROXY_BUSY'),
+    'PORT_NOT_ALLOWED': (407, 'SOURCE_PROXY_CONFIGURATION'),
+    'USER_BLOCKED': (407, 'SOURCE_PROXY_CONFIGURATION'),
+    'INTERNAL_SERVER_ERROR': (500, 'SOURCE_PROXY_UNAVAILABLE'),
+    'NO_HOST_CONNECTION': (502, 'SOURCE_PROXY_CONNECT_FAILED'),
+    'NO_RAY': (503, 'SOURCE_PROXY_POOL_EMPTY'),
+}
+
+
+def _proxy_rejection(header):
+    line = bytes(header).split(b'\r\n', 1)[0]
+    match = re.fullmatch(rb'HTTP/1\.[01] ([1-5][0-9]{2})(?: ([^\r\n]*))?', line)
+    status = int(match[1]) if match else None
+    label = (match[2] or b'').decode('ascii', errors='replace').strip() if match else ''
+    expected, code = _PROXY_ERRORS.get(label, (None, 'SOURCE_PROXY_UNAVAILABLE'))
+    if label == 'USER_RATE_LIMIT_EXCEEDED' and status in {407, 429}:
+        code = 'SOURCE_PROXY_QUOTA_EXHAUSTED'
+    elif expected is None or status != expected:
+        label, code = '', 'SOURCE_PROXY_UNAVAILABLE'
+    return SourceImportError(code, reason='proxy_rejected', http_status=status,
+                             proxy_error=label or None)
 
 
 def _http_error_code(status):
@@ -437,9 +469,7 @@ class _ProxyHTTPSConnection(_PinnedHTTPSConnection):
                 header.extend(chunk)
                 self.budget.consume_wire(1)
             if not re.match(rb'HTTP/1\.[01] 200(?: |\r)', header):
-                status = re.match(rb'HTTP/1\.[01] ([1-5][0-9]{2})(?: |\r)', header)
-                raise SourceImportError('SOURCE_PROXY_UNAVAILABLE', reason='proxy_rejected',
-                                        http_status=int(status[1]) if status else None)
+                raise _proxy_rejection(header)
             self.sock = _BudgetedSocket(self._context.wrap_socket(raw, server_hostname=self.host), self.budget)
         except BaseException:
             raw.close()
@@ -517,7 +547,8 @@ def _retryable_proxy_failure(error):
     return (error.code == 'SOURCE_INCOMPLETE'
             or (error.code == 'SOURCE_UNAVAILABLE' and error.reason in {
                 'network_timeout', 'connection_reset', 'connection_error'})
-            or (error.code == 'SOURCE_PROXY_UNAVAILABLE' and error.reason == 'proxy_rejected'
+            or (error.code in {'SOURCE_PROXY_UNAVAILABLE', 'SOURCE_PROXY_CONNECT_FAILED',
+                               'SOURCE_PROXY_POOL_EMPTY'} and error.reason == 'proxy_rejected'
                 and error.http_status in {502, 503, 504}))
 
 
@@ -563,7 +594,7 @@ class _Transport:
             time.sleep(min(.05, max(0, end - time.monotonic())))
         self.budget.check()
         logging.getLogger(__name__).info(json.dumps({'event': 'source_request_retry',
-            'reason': error.reason, 'http_status': error.http_status,
+            'reason': error.reason, 'http_status': error.http_status, 'proxy_error': error.proxy_error,
             'request_retries': self.budget.request_retries}))
         return True
 
@@ -1129,7 +1160,7 @@ def download_source(source, output: Path, *, max_bytes: int, max_duration: float
         error.diagnostics = SourceFailure(stage=stage, reason=error.reason,
             elapsed_ms=max(0, min(14_400_000, round((time.monotonic() - started) * 1000))),
             retries=budget.retries, http_status=error.http_status,
-            request_retries=budget.request_retries if use_proxy else None)
+            request_retries=budget.request_retries if use_proxy else None, proxy_error=error.proxy_error)
         logging.getLogger(__name__).info(json.dumps({'event': 'source_import_failed',
             'code': error.code, **error.diagnostics.model_dump(exclude_none=True)}))
 
@@ -1183,7 +1214,7 @@ def download_source(source, output: Path, *, max_bytes: int, max_duration: float
                 transport = _Transport(budget, proxy_url, renew_session=True)
                 logging.getLogger(__name__).info(json.dumps({'event': 'source_proxy_rotated',
                     'stage': stage, 'reason': error.reason, 'http_status': error.http_status,
-                    'retries': budget.retries}))
+                    'proxy_error': error.proxy_error, 'retries': budget.retries}))
                 stage, stage_started = 'metadata', time.monotonic()
         stage, stage_started = 'checksum', time.monotonic()
         digest = hashlib.sha256()
