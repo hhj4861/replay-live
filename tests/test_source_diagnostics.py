@@ -99,7 +99,7 @@ def test_unexpected_extractor_failure_is_logged_safely(monkeypatch, tmp_path, ca
 @pytest.mark.parametrize('override', [
     {'reason': 'http://username:password@example.com'}, {'stage': 'private-path'},
     {'http_status': True}, {'http_status': 600}, {'http_status': '503'},
-    {'elapsed_ms': -1}, {'elapsed_ms': 14_400_001}, {'retries': 2},
+    {'elapsed_ms': -1}, {'elapsed_ms': 14_400_001}, {'retries': 3},
     {'url': 'https://private.example'}, {'message': 'secret'},
 ])
 def test_callback_rejects_unbounded_or_free_text_diagnostics(override):

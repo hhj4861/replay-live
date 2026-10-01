@@ -100,15 +100,15 @@ def test_auth_quota_or_denied_connection_is_not_retried(monkeypatch, tmp_path, s
     assert len(attempts) == len(requests) == 1 and not list(tmp_path.iterdir())
 
 
-def test_two_unavailable_sessions_stop_without_third_request(monkeypatch, tmp_path):
+def test_three_unavailable_sessions_stop_without_fourth_request(monkeypatch, tmp_path):
     failures = [sources.SourceImportError('SOURCE_PROXY_UNAVAILABLE', reason='proxy_rejected', http_status=502)
-                for _ in range(2)]
+                for _ in range(3)]
     attempts, requests = setup_transport(monkeypatch, list(failures))
     with pytest.raises(sources.SourceImportError) as caught:
         run(tmp_path / 'out.mp4')
-    assert caught.value is failures[1]
-    assert caught.value.diagnostics.retries == 1 and caught.value.diagnostics.http_status == 502
-    assert len(attempts) == len(requests) == 2 and not list(tmp_path.iterdir())
+    assert caught.value is failures[2]
+    assert caught.value.diagnostics.retries == 2 and caught.value.diagnostics.http_status == 502
+    assert len(attempts) == len(requests) == 3 and not list(tmp_path.iterdir())
 
 
 def test_partial_transfer_is_still_charged_to_original_byte_budget(monkeypatch, tmp_path, sample_mp4):

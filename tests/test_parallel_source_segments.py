@@ -243,7 +243,7 @@ def test_parallel_proxy_recovery_reaches_library(commercial, monkeypatch, sample
     assert client.get('/api/media', headers={'Authorization': 'Bearer beta'}).json() == []
 
 
-@pytest.mark.parametrize('status,attempts', [(502, 2), (403, 1), (407, 1), (429, 1)])
+@pytest.mark.parametrize('status,attempts', [(502, 3), (403, 1), (407, 1), (429, 1)])
 def test_parallel_failures_keep_import_retry_policy(monkeypatch, tmp_path, status, attempts):
     budgets = []
 

@@ -344,8 +344,8 @@ def test_persistent_proxy_failure_keeps_retry_evidence_after_worker_cleanup(
     assert repo.get_job('alpha', job['id'])['state'] == 'failed'
     events = [json.loads(r.message) for r in caplog.records if r.name == 'replay.operations']
     failure = next(e for e in events if e['event'] == 'worker_finished')['source_failure']
-    assert failure['request_retries'] == 4 and failure['retries'] == 1
-    assert failure['http_status'] == 502 and origin['attempts'] == 6
+    assert failure['request_retries'] == 6 and failure['retries'] == 2
+    assert failure['http_status'] == 502 and origin['attempts'] == 9
     assert client.get('/api/usage').json()['storage_reserved_bytes'] == 0
     assert job['source'] == {} and job['callback_token'] == ''
 

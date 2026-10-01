@@ -779,7 +779,7 @@ class Repository:
             raise LeaseLost('Worker lease has expired or changed')
         return dict(row)
 
-    def heartbeat(self, job_id, lease_token, *, lease_seconds=60, progress=None):
+    def heartbeat(self, job_id, lease_token, *, lease_seconds=60, progress=None, source_recovering=None):
         _number(lease_seconds, 'lease seconds', 5, 900)
         now = self.clock()
         with self._transaction() as conn:
@@ -787,6 +787,15 @@ class Repository:
             now = self._now(conn)
             row = self._lease(conn, job_id, lease_token, now)
             values = dict(lease_expires=min(now + lease_seconds, row['deadline'], row['reserved_until']), updated=now)
+            if source_recovering is not None:
+                if type(source_recovering) is not bool or row['target'] != 'import':
+                    raise RepositoryError('Source recovery is only valid for imports')
+                if not row['cancel_requested']:
+                    # Keep the reservation and importing state; this is a
+                    # transient phase marker, not a terminal media failure.
+                    conn.execute(update(media).where(media.c.id == row['media_id'],
+                        media.c.tenant_id == row['tenant_id'], media.c.status == 'importing').values(
+                            error_code='SOURCE_RECOVERING' if source_recovering else None, updated=now))
             if progress is not None:
                 item = self._media(conn, row['tenant_id'], row['media_id'])
                 _number(progress, 'progress', row['progress'], max(self.validation_duration, item['duration']) if row['target'] in PROCESSING_TARGETS else item['duration'])

@@ -32,6 +32,8 @@ class LeaseClient:
         self.stop = threading.Event()
         self.done = threading.Event()
         self.progress = float(job.get('progress', 0))
+        self.source_recovering = None
+        self.beat_lock = threading.RLock()
         self.last_success = time.monotonic()
         self.thread = threading.Thread(target=self._loop, name='lease-heartbeat', daemon=True)
 
@@ -43,10 +45,23 @@ class LeaseClient:
         return result.json()
 
     def beat(self):
-        response = self.call('/heartbeat', {'progress': self.progress})
-        self.last_success = time.monotonic()
-        if response.get('cancel_requested'):
-            self.stop.set()
+        with self.beat_lock:
+            body = {'progress': self.progress}
+            if self.source_recovering is not None:
+                body['source_recovering'] = self.source_recovering
+            response = self.call('/heartbeat', body)
+            self.last_success = time.monotonic()
+            if response.get('cancel_requested'):
+                self.stop.set()
+
+    def recovery(self, active):
+        # Serialize phase updates with the periodic heartbeat so an older phase
+        # cannot overwrite a newer one. This callback never starts another job.
+        with self.beat_lock:
+            self.require_active()
+            self.source_recovering = active
+            self.beat()
+            self.require_active()
 
     def _loop(self):
         while not self.done.wait(3):
@@ -168,7 +183,8 @@ def run_job(job, *, client=None, workdir=None):
                     raise SourceImportError('SOURCE_PROXY_UNAVAILABLE')
                 imported = download_source(job.get('source'), source, max_bytes=output_budget,
                     max_duration=job['max_duration'], timeout=min(job['validation_timeout'], max(1, job['deadline'] - time.time())),
-                    check_active=lease.require_active, proxy_url=os.environ.get('REPLAY_SOURCE_PROXY_URL'))
+                    check_active=lease.require_active, proxy_url=os.environ.get('REPLAY_SOURCE_PROXY_URL'),
+                    on_recovery=lease.recovery)
                 lease.require_active()
             else:
                 sha, size = hashlib.sha256(), 0
