@@ -110,6 +110,7 @@ class BroadcastBatch(BaseModel):
 
 class Heartbeat(BaseModel):
     progress: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    source_recovering: StrictBool | None = None
 
 
 class Finish(Heartbeat):
@@ -353,7 +354,10 @@ def create_production_app(settings=None, *, repository=None, storage=None, keys=
             raise HTTPException(401, '작업 실행 권한이 만료되었거나 일치하지 않습니다.') from None
 
     def public_media(item):
-        return {key: value for key, value in item.items() if key not in ('object_key', 'sha256', 'etag', 'tenant_id')}
+        result = {key: value for key, value in item.items() if key not in ('object_key', 'sha256', 'etag', 'tenant_id')}
+        if item['status'] == 'importing' and item.get('error_code') == 'SOURCE_RECOVERING':
+            result.update(recovering=True, error_code=None)
+        return result
 
     def public_job(item):
         hidden = {'secret_ciphertext', 'lease_token', 'payload_hash', 'idempotency_key', 'worker_id', 'output_key', 'tenant_id'}
@@ -660,7 +664,8 @@ def create_production_app(settings=None, *, repository=None, storage=None, keys=
 
     @app.post('/internal/jobs/{job_id}/heartbeat')
     def heartbeat(job_id: str, payload: Heartbeat, claims=Depends(callback)):
-        return repo.heartbeat(job_id, claims['lease_token'], lease_seconds=cfg.lease_seconds, progress=payload.progress)
+        return repo.heartbeat(job_id, claims['lease_token'], lease_seconds=cfg.lease_seconds,
+                              progress=payload.progress, source_recovering=payload.source_recovering)
 
     @app.post('/internal/jobs/{job_id}/output')
     def output_intent(job_id: str, payload: OutputIntent, claims=Depends(callback)):
