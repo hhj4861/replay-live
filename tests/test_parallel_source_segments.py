@@ -14,6 +14,13 @@ from test_commercial_api import commercial, run_claimed
 PROXY = 'http://synthetic__sessid.fixed:secret@gw.dataimpulse.com:823'
 
 
+@pytest.fixture(autouse=True)
+def exhausted_request_retries(monkeypatch):
+    # Keep fault/barrier tests focused on sibling abort and session fallback.
+    # Default request retries and real persistent sockets are tested separately.
+    monkeypatch.setattr(sources, '_REQUEST_RETRIES', 0)
+
+
 def network(monkeypatch, payloads, *, delay=None, failure=None, headers=None):
     lock = threading.Lock()
     state = {'active': 0, 'peak': 0, 'started': [], 'closed': 0, 'proxies': []}

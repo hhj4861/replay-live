@@ -15,6 +15,9 @@ SOURCE = {'provider': 'youtube', 'url': 'https://youtu.be/3G579tV_YB8'}
 
 
 def setup_transport(monkeypatch, responses):
+    # Exercise whole-import recovery after the short request retries have been
+    # exhausted. The default request retry path has its own integration tests.
+    monkeypatch.setattr(sources, '_REQUEST_RETRIES', 0)
     attempts, requests = [], []
     monkeypatch.setattr(sources, '_resolve', lambda *_: ['8.8.8.8'])
 

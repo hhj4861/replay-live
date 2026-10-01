@@ -22,7 +22,7 @@ pycparser==3.0
 pydantic==2.13.5
 pydantic_core==2.46.5
 Pygments==2.21.0
-PyJWT==2.14.0
+PyJWT==2.15.0
 pytest==9.1.1
 python-dateutil==2.9.0.post0
 python-multipart==0.0.32
@@ -32,7 +32,7 @@ SQLAlchemy==2.0.52
 starlette==1.6.0
 typing-inspection==0.4.4
 typing_extensions==4.16.0
-urllib3==2.7.0
+urllib3==2.8.0
 uvicorn==0.52.4
 yt-dlp==2026.8.19
 yt-dlp-ejs==0.8.0

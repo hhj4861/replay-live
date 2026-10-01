@@ -77,6 +77,8 @@ _METADATA_TOTAL = 16 * 1024 * 1024
 _MAX_REQUESTS = 5000
 _MAX_SEGMENTS = 4096
 _SEGMENT_CONCURRENCY = 4
+_REQUEST_RETRIES = 2
+_IMPORT_REQUEST_RETRIES = 8
 
 
 class SourceImportError(ValueError):
@@ -219,6 +221,7 @@ class _Budget:
         self.media_bytes = self.metadata_bytes = self.requests = 0
         self.wire_bytes = 0
         self.retries = 0
+        self.request_retries = 0
         self.failure = None
         self.cancel_error = None
         self._lock = threading.RLock()
@@ -268,6 +271,14 @@ class _Budget:
             if self.retries >= 1:
                 return False
             self.retries += 1
+            return True
+
+    def retry_request(self):
+        with self._lock:
+            self.check()
+            if self.request_retries >= _IMPORT_REQUEST_RETRIES:
+                return False
+            self.request_retries += 1
             return True
 
     def consume(self, count, *, metadata):
@@ -514,29 +525,80 @@ class _Transport:
     def __init__(self, budget, proxy_url=None, *, renew_session=False):
         self.budget = budget
         self.proxy = _proxy_authorization(proxy_url, renew_session=renew_session) if proxy_url else None
+        self._idle = []
+        self._pool_lock = threading.Lock()
+
+    def close_idle(self):
+        with self._pool_lock:
+            idle, self._idle = self._idle, []
+        for _, connection in idle:
+            connection.close()
+
+    def _connection(self, host, address, reuse):
+        if reuse:
+            with self._pool_lock:
+                for index, (origin, connection) in enumerate(self._idle):
+                    if origin == host:
+                        self._idle.pop(index)
+                        return connection
+                # Do not retain idle tunnels to other origins while opening new
+                # ones. At most the four segment workers own open connections.
+                stale = self._idle.pop()[1] if self._idle else None
+            if stale is not None:
+                stale.close()
+        cls = _ProxyHTTPSConnection if self.proxy else _PinnedHTTPSConnection
+        kwargs = {'proxy': self.proxy} if self.proxy else {}
+        return cls(host, address, min(5, self.budget.remaining()), budget=self.budget, **kwargs)
+
+    def _retry_request(self, error, attempt):
+        if (not self.proxy or error is self.budget.cancel_error
+                or not _retryable_proxy_failure(error) or attempt >= _REQUEST_RETRIES
+                or not self.budget.retry_request()):
+            return False
+        # Short, cancellable backoff. The original deadline and byte/request
+        # budgets cover every retry, including partial and failed responses.
+        end = time.monotonic() + min(.2 * (2 ** attempt), 1)
+        while time.monotonic() < end:
+            self.budget.check()
+            time.sleep(min(.05, max(0, end - time.monotonic())))
+        self.budget.check()
+        logging.getLogger(__name__).info(json.dumps({'event': 'source_request_retry',
+            'reason': error.reason, 'http_status': error.http_status,
+            'request_retries': self.budget.request_retries}))
+        return True
 
     @contextmanager
-    def response(self, url, *, headers=None, method='GET', data=None):
+    def response(self, url, *, headers=None, method='GET', data=None, reuse=False):
         if method not in {'GET', 'POST', 'HEAD'} or (data is not None and (not isinstance(data, bytes) or len(data) > _METADATA_LIMIT)):
             raise SourceImportError('SOURCE_UNAVAILABLE')
         current = _https_url(url)
         request_headers = _headers(headers or {}, metadata=True)
+        reuse = bool(reuse and self.proxy and method == 'GET' and data is None)
         connection = response = None
         try:
             for redirect in range(6):
                 self.budget.request()
                 parsed = urlsplit(current)
                 addresses = _resolve(parsed.hostname, self.budget)
-                if self.proxy:
-                    connection = _ProxyHTTPSConnection(parsed.hostname, addresses[0], min(5, self.budget.remaining()), budget=self.budget, proxy=self.proxy)
-                else:
-                    connection = _PinnedHTTPSConnection(parsed.hostname, addresses[0], min(5, self.budget.remaining()), budget=self.budget)
+                connection = self._connection(parsed.hostname, addresses[0], reuse)
                 path = urlunsplit(('', '', parsed.path, parsed.query, ''))
                 connection.request(method, path, body=data, headers=request_headers)
                 response = connection.getresponse()
                 self.budget.check()
                 if response.status not in {301, 302, 303, 307, 308}:
                     yield response, current
+                    # Only fully consumed successful HTTP/1.1 responses can
+                    # return to the pool. Errors, redirects, cancellation,
+                    # truncation and Connection: close always discard it.
+                    if (reuse and response.status == 200
+                            and getattr(response, 'will_close', True) is False
+                            and response.isclosed() and connection.sock is not None):
+                        response.close()
+                        response = None
+                        with self._pool_lock:
+                            if len(self._idle) < _SEGMENT_CONCURRENCY:
+                                self._idle.append((parsed.hostname, connection))
+                                connection = None
                     return
                 location = response.getheader('Location')
                 if not location or redirect == 5:
@@ -598,12 +660,16 @@ class _Transport:
             raise SourceImportError('SOURCE_INCOMPLETE')
 
     def metadata(self, url, *, headers=None, method='GET', data=None):
+        attempt = 0
         while True:
             try:
                 with self.response(url, headers=headers, method=method, data=data) as (response, final_url):
                     payload = b'' if method == 'HEAD' else b''.join(self._read(response, metadata=True, limit=_METADATA_LIMIT))
                     return response.status, dict(response.getheaders()), payload, final_url
             except SourceImportError as error:
+                if method in {'GET', 'HEAD'} and self._retry_request(error, attempt):
+                    attempt += 1
+                    continue
                 # Let the import restart metadata and media together on a new IP.
                 if self.proxy and _retryable_proxy_failure(error):
                     raise
@@ -611,11 +677,12 @@ class _Transport:
                         or not self.budget.retry()):
                     raise
 
-    def download(self, url, file, *, headers=None):
+    def download(self, url, file, *, headers=None, reuse=False):
         offset = file.tell()
+        attempt = 0
         while True:
             try:
-                with self.response(url, headers=headers) as (response, _):
+                with self.response(url, headers=headers, reuse=reuse) as (response, _):
                     if response.status != 200:
                         raise SourceImportError(_http_error_code(response.status), reason='http_error',
                                                 http_status=response.status)
@@ -627,6 +694,9 @@ class _Transport:
                 # copy of the partial segment. Failed bytes still count as traffic.
                 file.seek(offset)
                 file.truncate()
+                if self._retry_request(error, attempt):
+                    attempt += 1
+                    continue
                 if self.proxy and _retryable_proxy_failure(error):
                     raise
                 if error.code not in {'SOURCE_INCOMPLETE', 'SOURCE_UNAVAILABLE'} or not self.budget.retry():
@@ -845,7 +915,7 @@ def _download_segments(urls, path, transport, headers):
             try:
                 budget.check()
                 with part.open('xb') as file:
-                    transport.download(urls[index], file, headers=headers)
+                    transport.download(urls[index], file, headers=headers, reuse=True)
                 return part
             except BaseException as error:
                 budget.abort_transfer(error)
@@ -877,6 +947,7 @@ def _download_segments(urls, path, transport, headers):
             # Stop siblings cooperatively through all budgeted socket reads.
             # Never delete their files or rotate sessions while they still run.
             pool.shutdown(wait=True, cancel_futures=True)
+            transport.close_idle()
             budget.finish_transfer()
 
 
@@ -924,6 +995,7 @@ def _download_format(fmt, path, transport, max_duration):
     logging.getLogger(__name__).info(json.dumps({'event': 'source_transfer',
         'segments': len(urls), 'concurrency': min(len(urls), _SEGMENT_CONCURRENCY) if parallel else 1,
         'elapsed_ms': round((time.monotonic() - started) * 1000),
+        'request_retries': transport.budget.request_retries,
         'media_bytes': transport.budget.media_bytes - before_bytes}))
     return duration
 
@@ -1056,7 +1128,8 @@ def download_source(source, output: Path, *, max_bytes: int, max_duration: float
     def record_failure(error):
         error.diagnostics = SourceFailure(stage=stage, reason=error.reason,
             elapsed_ms=max(0, min(14_400_000, round((time.monotonic() - started) * 1000))),
-            retries=budget.retries, http_status=error.http_status)
+            retries=budget.retries, http_status=error.http_status,
+            request_retries=budget.request_retries if use_proxy else None)
         logging.getLogger(__name__).info(json.dumps({'event': 'source_import_failed',
             'code': error.code, **error.diagnostics.model_dump(exclude_none=True)}))
 
