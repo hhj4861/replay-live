@@ -17,3 +17,4 @@ class SourceFailure(BaseModel):
     elapsed_ms: int = Field(ge=0, le=14_400_000)
     retries: int = Field(ge=0, le=1)
     http_status: int | None = Field(default=None, ge=100, le=599)
+    request_retries: int | None = Field(default=None, ge=0, le=8)
