@@ -153,3 +153,12 @@ Validation of this change:
   five seconds of waiting, then verifies real local MP4 storage and preview.
 - Cancellation/deadline tests prevent a third connection; stale callbacks cannot
   restore recovery after terminal failure. Tenant and reservation checks remain intact.
+
+### Image-build CI follow-up
+
+PR #57's push check twice failed on a `files.pythonhosted.org` socket read timeout
+while downloading pinned packages (API image first, media image on rerun). The same
+commit's PR check and both application verification runs passed. Both image builds
+now explicitly allow 60 seconds per socket read, retaining five connection attempts.
+Package pins, TLS verification and all CI gates remain unchanged. Validate the exact
+image builds in the hosted Cloudflare check before merging.
