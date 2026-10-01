@@ -92,9 +92,9 @@ def test_only_transient_provider_errors_retry_and_rotate(monkeypatch, tmp_path, 
     failure = caught.value.diagnostics
     transient = label in {'NO_HOST_CONNECTION', 'NO_RAY'}
     assert caught.value.code == code and failure.proxy_error == label
-    assert failure.retries == int(transient)
-    assert failure.request_retries == (4 if transient else 0)
-    assert state['opened'] == (6 if transient else 1)
+    assert failure.retries == 2 * int(transient)
+    assert failure.request_retries == (6 if transient else 0)
+    assert state['opened'] == (9 if transient else 1)
     assert state['closed'] == state['opened']
     assert not list(tmp_path.iterdir())
     assert all(secret not in caplog.text for secret in ['hidden-secret', 'synthetic', 'SzrcusiORCI'])

@@ -79,6 +79,7 @@ _MAX_SEGMENTS = 4096
 _SEGMENT_CONCURRENCY = 4
 _REQUEST_RETRIES = 2
 _IMPORT_REQUEST_RETRIES = 8
+_PROXY_RECOVERY_DELAYS = (0, 5)
 
 
 class SourceImportError(ValueError):
@@ -295,12 +296,12 @@ class _Budget:
         self.check()
         return max(.001, self.deadline - time.monotonic())
 
-    def retry(self):
+    def retry(self, maximum=1):
         with self._lock:
             self.check()
-            # One recovery across the entire import, including manifests/segments.
+            # Recovery is bounded across the entire import, including manifests/segments.
             # Keep the original byte, wire, request and wall-clock budgets.
-            if self.retries >= 1:
+            if self.retries >= maximum:
                 return False
             self.retries += 1
             return True
@@ -1131,7 +1132,7 @@ def _make_mp4(paths, output, budget, max_duration, *, expected_duration=None,
 
 
 def download_source(source, output: Path, *, max_bytes: int, max_duration: float,
-                    timeout: float, check_active, proxy_url=None):
+                    timeout: float, check_active, proxy_url=None, on_recovery=None):
     """Create one local H.264/AAC MP4, or remove partial files and raise a safe code."""
     if (not isinstance(source, dict) or isinstance(max_bytes, bool) or not isinstance(max_bytes, int)
             or not 0 < max_bytes <= 100 * 1024 ** 3
@@ -1187,6 +1188,8 @@ def download_source(source, output: Path, *, max_bytes: int, max_duration: float
                                 and expected_duration.is_integer()):
                             rounded_duration, expected_duration = expected_duration, None
                     finish_stage()
+                    if on_recovery is not None and budget.retries:
+                        on_recovery(False)
                     stage, stage_started = 'download', time.monotonic()
                     paths = []
                     for index, fmt in enumerate(formats):
@@ -1209,8 +1212,21 @@ def download_source(source, output: Path, *, max_bytes: int, max_duration: float
                 # Clear only this recoverable error, retaining every usage limit.
                 if budget.failure is error:
                     budget.failure = None
-                if not budget.retry():
+                if not budget.retry(maximum=len(_PROXY_RECOVERY_DELAYS)):
                     raise
+                transport.close_idle()
+                if on_recovery is not None:
+                    on_recovery(True)
+                delay = _PROXY_RECOVERY_DELAYS[budget.retries - 1]
+                logging.getLogger(__name__).info(json.dumps({'event': 'source_recovery_wait',
+                    'delay_seconds': delay, 'retries': budget.retries}))
+                # Keep the same deadline and all usage counters. Cancellation
+                # interrupts waiting before any new paid connection is opened.
+                until = time.monotonic() + delay
+                while time.monotonic() < until:
+                    budget.check()
+                    time.sleep(min(.1, max(0, until - time.monotonic())))
+                budget.check()
                 transport = _Transport(budget, proxy_url, renew_session=True)
                 logging.getLogger(__name__).info(json.dumps({'event': 'source_proxy_rotated',
                     'stage': stage, 'reason': error.reason, 'http_status': error.http_status,
