@@ -1,0 +1,12 @@
+{
+  "name": "braces",
+  "version": "3.0.3-replay.1",
+  "private": true,
+  "description": "Replay security backport for CVE-2026-93687; see README.md",
+  "main": "index.js",
+  "license": "MIT",
+  "author": "Jon Schlinkert (https://github.com/jonschlinkert)",
+  "dependencies": {
+    "fill-range": "7.1.1"
+  }
+}
