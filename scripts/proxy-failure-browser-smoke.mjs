@@ -81,7 +81,7 @@ try {
   // Recovery is a nonterminal phase: keep one import, survive a refresh,
   // then either select the prepared video or expose the final failure.
   for (const terminal of ['ready', 'failed']) {
-    const context = await browser.newContext();
+    const context = await browser.newContext(terminal === 'failed' ? { viewport: { width: 390, height: 844 } } : {});
     try {
       await context.addInitScript(() => {
         sessionStorage.setItem('oidc.user:https://synthetic.example:synthetic-client', JSON.stringify({
@@ -89,7 +89,7 @@ try {
           profile: { sub: 'synthetic-user' }, expires_at: Math.floor(Date.now() / 1000) + 3600,
         }));
       });
-      let imported = false, phase = 'recovering', requests = 0;
+      let imported = false, phase = 'importing', requests = 0;
       const item = () => ({ id: 'recovered-media', name: '자동 복구 영상',
         status: phase === 'recovering' ? 'importing' : phase,
         recovering: phase === 'recovering', bytes: phase === 'ready' ? 1000 : 0,
@@ -117,12 +117,39 @@ try {
       await page.getByLabel('녹화 영상 링크', { exact: true }).fill('https://youtu.be/SzrcusiORCI');
       await page.getByRole('button', { name: '영상 가져오기', exact: true }).click();
       const status = page.locator('.source-import-status');
+      const bar = status.getByRole('progressbar');
+      await bar.waitFor();
+      assert.equal(await bar.getAttribute('value'), null, 'Keep native progress indeterminate');
+      assert.equal(await bar.getAttribute('aria-valuenow'), null, 'Do not invent a download percentage');
+      assert.equal(await bar.getAttribute('aria-valuetext'), '링크에서 영상 가져오는 중');
+      assert.equal(await bar.evaluate(el => el.getBoundingClientRect().width > 150), true);
+      assert.equal(await status.locator('.source-preparation-fill').evaluate(el => getComputedStyle(el).animationName), 'source-preparation-sweep');
+      if (process.env.REPLAY_SMOKE_SCREENSHOTS) {
+        await fs.mkdir(process.env.REPLAY_SMOKE_SCREENSHOTS, { recursive: true });
+        await status.screenshot({ path: path.join(process.env.REPLAY_SMOKE_SCREENSHOTS, `import-${terminal}.png`) });
+      }
+      phase = 'recovering';
       await status.getByText('연결 복구 중', { exact: true }).waitFor();
+      assert.equal(await bar.getAttribute('aria-valuetext'), '연결 복구 중');
+      assert.ok((await status.getAttribute('class')).includes('recovering'));
+      if (process.env.REPLAY_SMOKE_SCREENSHOTS) await status.screenshot({ path: path.join(process.env.REPLAY_SMOKE_SCREENSHOTS, `recovery-${terminal}.png`) });
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+      assert.equal(await status.locator('.source-preparation-fill').evaluate(el => getComputedStyle(el).animationName), 'none');
+      await page.emulateMedia({ reducedMotion: 'no-preference' });
       assert.equal(await page.getByRole('button', { name: '연결 복구 중…', exact: true }).isDisabled(), true);
       assert.equal(await page.getByRole('alert').filter({ hasText: '영상을 준비하지 못했습니다.' }).count(), 0);
       await page.reload();
       await status.getByText('연결 복구 중', { exact: true }).waitFor();
       assert.equal(requests, 1);
+      assert.equal(await bar.isVisible(), true);
+      if (terminal === 'ready') {
+        phase = 'importing';
+        await status.getByText('링크에서 영상 가져오는 중', { exact: true }).waitFor();
+        assert.equal((await status.getAttribute('class')).includes('recovering'), false);
+        phase = 'validating';
+        await status.getByText('영상 검사 중', { exact: true }).waitFor();
+        assert.equal(await bar.getAttribute('aria-valuetext'), '영상 검사 중');
+      }
       phase = terminal;
       if (terminal === 'ready') {
         await page.getByRole('button', { name: '자동 복구 영상 선택', exact: true }).waitFor();
@@ -132,8 +159,9 @@ try {
         await page.waitForFunction(() => !document.querySelector('output.source-import-status'));
         await page.getByText('다운로드 연결을 사용할 수 없습니다', { exact: false }).first().waitFor();
       }
+      assert.equal(await bar.count(), 0);
       assert.equal(requests, 1); assert.equal(errors, 0);
-      evidence.push({ recovery_terminal: terminal, survived_refresh: true, import_requests: requests, javascript_errors: errors });
+      evidence.push({ recovery_terminal: terminal, indeterminate_progress: true, reduced_motion_verified: true, viewport: page.viewportSize(), survived_refresh: true, import_requests: requests, javascript_errors: errors });
     } finally { await context.close(); }
   }
   console.log(JSON.stringify({ passed: true, headless: true, synthetic_api: true, cases: evidence }));
