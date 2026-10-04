@@ -158,6 +158,8 @@ export default function CommercialHome() {
   const importedMedia = media.find(item => item.id === importId)
     || (!importId ? media.find(item => item.status === 'importing') : undefined);
   const recovering = importedMedia?.status === 'importing' && importedMedia.recovering === true;
+  const preparationStatus = recovering ? '연결 복구 중'
+    : states[importedMedia?.status || (preparationKind === 'upload' ? 'validating' : 'importing')] || '영상 준비 중';
   const storage = usage ? storageBreakdown(usage) : undefined;
   const failureMessage = (code: string) => code === 'SOURCE_DURATION_EXCEEDED'
     ? sourceDurationFailure(health?.max_duration_seconds) : failures[code];
@@ -664,7 +666,16 @@ export default function CommercialHome() {
         </div>}
         <input type="file" ref={picker} accept=".mp4,video/mp4" hidden onChange={event => void upload(event.target.files?.[0])} />
         {busy === 'upload' && <Progress value={uploadProgress} aria-label="영상 업로드 진행률" />}
-        {importPending && <output className="source-import-status" aria-live="polite"><LoaderCircle size={18} className="source-spinner" aria-hidden="true" /><span><strong>{recovering ? '연결 복구 중' : states[importedMedia?.status || (preparationKind === 'upload' ? 'validating' : 'importing')] || '영상 준비 중'}</strong><small>{recovering ? '다운로드 연결이 잠시 끊겨 자동으로 다시 시도하고 있어요. 다시 누르지 않아도 됩니다.' : '준비와 검사가 끝나면 이 영상이 자동으로 선택됩니다. 송출 대상은 미리 설정할 수 있습니다.'}</small></span></output>}
+        {importPending && <output className={`source-import-status source-preparation-status${recovering ? ' recovering' : ''}`} aria-live="polite">
+          <span className="source-preparation-content">
+            <strong id="source-preparation-label">{preparationStatus}</strong>
+            <span className="source-preparation-track">
+              <progress aria-labelledby="source-preparation-label" aria-valuetext={preparationStatus} />
+              <span className="source-preparation-fill" aria-hidden="true" />
+            </span>
+            <small>{recovering ? '연결을 복구한 뒤 자동으로 다시 시도해요.' : '완료되면 자동으로 선택돼요. 기다리는 동안 송출 채널을 설정할 수 있어요.'}</small>
+          </span>
+        </output>}
         {importedMedia && ['failed', 'stopped'].includes(importedMedia.status) && <div className="source-import-status failed" role="alert"><div><strong>영상을 준비하지 못했습니다.</strong><p>{failureMessage(importedMedia.error_code || '') || (preparationKind === 'upload' ? '업로드한 영상이 재생 가능한 MP4인지 확인하고 다시 선택하세요.' : '링크의 공개 여부와 유효 기간을 확인하세요. 플랫폼에서 접근을 제한할 수도 있습니다.')}</p><div className="source-import-actions">{preparationKind === 'import' && sourceUrl.trim() && canRetrySource(importedMedia.error_code || '') && <Button size="sm" variant="outline" disabled={!canOperate || !!busy || !connected} onClick={() => { setSourceMode('link'); void importSource(); }}>현재 링크로 다시 가져오기</Button>}<Button size="sm" variant="ghost" onClick={() => setSourceMode('file')}>파일로 업로드</Button></div></div></div>}
       </div>
       </div>
